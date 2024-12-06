@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h2hdb-downloader"
+version = "0.0.1"
+description = "Download gallery and insert into h2hdb"
+readme = "README.md"
+authors = [{ name = "Kuan-Lun Wang" }]
+license = { text = "GNU Affero General Public License v3" }
+dependencies = ["h2hdb>=0.6.68.56", "hbrowser>=0.0.3"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/Kuan-Lun/h2hdb-downloader"
+Source = "https://github.com/Kuan-Lun/h2hdb-downloader"
+Tracker = "https://github.com/Kuan-Lun/h2hdb-downloader/issues"
+
+[tool.setuptools]
+packages = ["h2hdb_downloader"]
+package-dir = { h2hdb_downloader = "src/h2hdb_downloader" }
+package-data = { h2hdb_downloader = ["py.typed"] }
