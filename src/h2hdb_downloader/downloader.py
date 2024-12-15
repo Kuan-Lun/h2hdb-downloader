@@ -19,9 +19,7 @@ class PreLinks:
         pass_gids: 已下載且已確認被更新的 GID
         """
         self.config = load_config(config_path)
-        self.todownload_gids_filename = os.path.join(
-            os.path.dirname(__file__), "todownload_gids.csv"
-        )
+        self.todownload_gids_filename = os.path.join(".", "todownload_gids.csv")
         self._check_todownload_gids_filename()
 
         with H2HDB(config=self.config) as connector:

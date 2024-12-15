@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "h2hdb-downloader"
-version = "0.0.2"
+version = "0.0.3"
 description = "Download gallery and insert into h2hdb"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
 license = { text = "GNU Affero General Public License v3" }
-dependencies = ["h2hdb>=0.6.68.59", "hbrowser>=0.0.5"]
+dependencies = ["h2hdb>=0.6.68.63", "hbrowser>=0.0.7"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
