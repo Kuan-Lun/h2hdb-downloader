@@ -117,7 +117,9 @@ class Downloader:
             gpair = connector.get_todownload_gids()
 
         # Case 1: GIDs with URL
-        galleries_withurl = [GalleryURLParser(url=gpair[1]) for gpair in gpair]
+        galleries_withurl = [
+            GalleryURLParser(url=gpair[1]) for gpair in gpair if gpair[1] != ""
+        ]
         for gallery in galleries_withurl:
             gb[gallery] = download_pairs["download_gallery"][0](
                 gallery, **download_pairs["download_gallery"][1]
@@ -131,7 +133,7 @@ class Downloader:
             gb = merged_downloaded_galleries(
                 gb,
                 download_pairs["download_gid"][0](
-                    gallery, **download_pairs["download_gid"][1]
+                    gid, **download_pairs["download_gid"][1]
                 ),
             )
             with H2HDB(config=self.prelinks.config) as connector:
