@@ -8,6 +8,7 @@ from typing import Callable, Any
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import H2HDB, load_config
 from hbrowser import ExHDriver, Tag
+from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
 
 class PreLinks:
@@ -96,13 +97,21 @@ def merged_downloaded_galleries(
 
 
 class Downloader:
-    def __init__(self, driver: ExHDriver, prelinks: PreLinks) -> None:
+    def __init__(
+        self,
+        driver: ExHDriver,
+        prelinks: PreLinks,
+        wait4client: int,
+        retry2download: int,
+    ) -> None:
         self.driver = driver
         self.prelinks = prelinks
         self.download: list[int] = list()
         self.remove: list[int] = list()
         self.new: list[int] = list()
         self.wocount = 0
+        self.wait4client = wait4client
+        self.retry2download = retry2download
         self._reset_wocount()
 
     def _reset_wocount(self) -> None:
@@ -174,7 +183,7 @@ class Downloader:
         )
         return self._clear_todownload_gids(download_pairs)
 
-    def download_gallery(self, gallery: GalleryURLParser) -> bool:
+    def _download_gallery(self, gallery: GalleryURLParser) -> bool:
         with H2HDB(config=self.prelinks.config) as connector:
             connector.insert_todownload_gid(gallery.gid, gallery.url)
         if (gallery.gid not in self.prelinks.pass_gids) or (
@@ -198,6 +207,22 @@ class Downloader:
         with H2HDB(config=self.prelinks.config) as connector:
             connector.remove_todownload_gid(gallery.gid)
         return isdownloaded
+
+    def download_gallery(self, gallery: GalleryURLParser) -> bool:
+        def raise_exception(time: int, e: Exception) -> None:
+            if time > 0:
+                sleep(time)
+            else:
+                raise e
+
+        try:
+            return self._download_gallery(gallery)
+        except ClientOfflineException as e:
+            raise_exception(self.wait4client, e)
+            return self._download_gallery(gallery)
+        except InsufficientFundsException as e:
+            raise_exception(self.retry2download, e)
+            return self._download_gallery(gallery)
 
     def _download_gid(
         self, gid: int, download_pair: tuple[Callable, dict[str, Any]]
