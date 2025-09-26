@@ -252,7 +252,7 @@ class Downloader:
                 gb[gallery] = download_pair[0](gallery, **download_pair[1])
                 if gallery.gid != gid:
                     with H2HDB(config=self.prelinks.config) as connector:
-                        if connector.check_gid_by_gid(gallery.gid):
+                        if connector.check_gid_by_gid(gid):
                             connector.insert_todelete_gid(gid)
             case _:
                 raise ValueError("There can only be one gallery or none.")
