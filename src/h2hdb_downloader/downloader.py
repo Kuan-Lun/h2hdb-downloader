@@ -2,13 +2,13 @@ import csv
 import os
 from random import random
 from time import sleep
-from typing import Callable, Any
-
+from typing import Any, Callable
 
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import H2HDB, load_config
 from hbrowser import ExHDriver, Tag
-from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
+from hbrowser.exceptions import (ClientOfflineException,
+                                 InsufficientFundsException)
 
 
 class PreLinks:
@@ -20,7 +20,10 @@ class PreLinks:
         pass_gids: 已下載且已確認被更新的 GID
         """
         self.config = load_config(config_path)
-        self.todownload_gids_filename = os.path.join(".", "todownload_gids.csv")
+        self.todownload_gids_filename = os.path.join(
+            ".",
+            "todownload_gids.csv",
+        )
         self._check_todownload_gids_filename()
 
         with H2HDB(config=self.config) as connector:
@@ -50,16 +53,25 @@ class PreLinks:
     def load_todownload_gids(self) -> list[tuple[int, str]]:
         with H2HDB(config=self.config) as connector:
             with open(
-                self.todownload_gids_filename, mode="r", newline="", encoding="utf-8"
+                self.todownload_gids_filename,
+                mode="r",
+                newline="",
+                encoding="utf-8",
             ) as file:
                 reader = csv.reader(file)
                 for i, row in enumerate(reader):
                     if i == 0:
                         continue
                     if row[0] == "":
-                        connector.insert_todownload_gid(0, str(row[1]))
+                        connector.insert_todownload_gid(
+                            0,
+                            str(row[1]),
+                        )
                     else:
-                        connector.insert_todownload_gid(int(row[0]), str(row[1]))
+                        connector.insert_todownload_gid(
+                            int(row[0]),
+                            str(row[1]),
+                        )
         self._new_todownload_gids_filename()
         with H2HDB(config=self.config) as connector:
             todownload_gids = connector.get_todownload_gids()
@@ -192,7 +204,9 @@ class Downloader:
             if self.driver.download(gallery):
                 with H2HDB(config=self.prelinks.config) as connector:
                     if connector.check_gid_by_gid(gallery.gid):
-                        connector.update_redownload_time_to_now_by_gid(gallery.gid)
+                        connector.update_redownload_time_to_now_by_gid(
+                            gallery.gid
+                        )
                 self.prelinks.append(gallery.gid)
                 self.download.append(gallery.gid)
                 sleep(random())
@@ -245,15 +259,31 @@ class Downloader:
         return gb
 
     def download_gid(self, gid: int) -> dict[GalleryURLParser, bool]:
-        return self._download_gid(gid, (self.download_gallery, dict[str, Any]()))
+        return self._download_gid(
+            gid,
+            (
+                self.download_gallery,
+                dict[str, Any](),
+            ),
+        )
 
     def deep_download_gid(
-        self, gid: int, filters: list[str], conditions: list[str], skip_check: bool
+        self,
+        gid: int,
+        filters: list[str],
+        conditions: list[str],
+        skip_check: bool,
     ) -> dict[GalleryURLParser, bool]:
         deep_parameters = dict[str, Any](
             filters=filters, conditions=conditions, skip_check=skip_check
         )
-        return self._download_gid(gid, (self.deep_download_gallery, deep_parameters))
+        return self._download_gid(
+            gid,
+            (
+                self.deep_download_gallery,
+                deep_parameters,
+            ),
+        )
 
     def download_galleries(
         self, galleries: list[GalleryURLParser]
@@ -270,12 +300,18 @@ class Downloader:
         if len(conditions) == 0:
             self.driver.get(tag.href)
             galleries = self.driver.search("", isclear=False)
-            gb = merged_downloaded_galleries(gb, self.download_galleries(galleries))
+            gb = merged_downloaded_galleries(
+                gb,
+                self.download_galleries(galleries),
+            )
         else:
             for condition in conditions:
                 self.driver.get(tag.href)
                 galleries = self.driver.search(condition, isclear=False)
-                gb = merged_downloaded_galleries(gb, self.download_galleries(galleries))
+                gb = merged_downloaded_galleries(
+                    gb,
+                    self.download_galleries(galleries),
+                )
         return gb
 
     def deep_download_gallery(
@@ -288,12 +324,19 @@ class Downloader:
         """
         Example
         g = GalleryURLParser("https://exhentai.org/g/xxxx/xxxx/")
-        deep_download_gallery(g, ["artist", "group"], ["language:chinese$", "language:speechless$"])
+        deep_download_gallery(
+            g,
+            ["artist", "group"],
+            ["language:chinese$", "language:speechless$"],
+        )
         """
         gb = dict[GalleryURLParser, bool]()
         if self.download_gallery(gallery) or skip_check:
             for filter in filters:
-                taglist: list[Tag] = self.driver.gallery2tag(gallery, filter=filter)
+                taglist: list[Tag] = self.driver.gallery2tag(
+                    gallery,
+                    filter=filter,
+                )
                 for tag in taglist:
                     gb = merged_downloaded_galleries(
                         gb, self.download_tag(tag, conditions)
