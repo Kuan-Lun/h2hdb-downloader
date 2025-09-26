@@ -28,5 +28,5 @@
       ]
     }
   },
-  "postCreateCommand": "pip install --upgrade pip setuptools wheel && pip install h2hdb hbrowser && pip install mypy flake8 black isort"
+  "postCreateCommand": "pip install --upgrade pip setuptools wheel build twine && pip install h2hdb hbrowser && pip install mypy flake8 black isort"
 }
