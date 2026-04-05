@@ -1,0 +1,36 @@
+{
+  // --- Python 分析設定 ---
+  // 關閉 Pylance 型別檢查，統一由 mypy 負責（Pylance 仍提供補完/跳轉等語言服務）。
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingModuleSource": "none"
+  },
+  // --- 格式化設定 ---
+  // 使用 Black 作為唯一 formatter（僅作用於 Python）。
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter"
+  },
+  // --- Ruff（原生語言伺服器）---
+  // 規則放在 pyproject.toml（例如啟用 I 規則以檢查/排序 imports）。
+  // 儲存時自動修正可安全修改的問題（含 imports 排序）。
+  "editor.codeActionsOnSave": {
+    "source.fixAll.ruff": "always"
+  },
+  // --- 一般編輯偏好 ---
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "editor.rulers": [
+    88
+  ],
+  "flake8.args": [
+    "--max-line-length=88",
+    "--ignore=E203,E226,E501,W503,E704"
+  ],
+  // --- mypy 擴充套件 ---
+  // 使用專案虛擬環境中的 mypy，確保 IDE 與 CLI (uv run mypy) 結果一致。
+  "mypy-type-checker.importStrategy": "fromEnvironment",
+  "mypy-type-checker.args": [
+    "--config-file=mypy.ini"
+  ]
+}
