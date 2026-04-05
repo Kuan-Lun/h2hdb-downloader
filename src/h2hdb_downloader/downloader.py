@@ -1,14 +1,14 @@
+import asyncio
 import csv
 import os
+from collections.abc import Awaitable, Callable
 from random import random
-from time import sleep
-from typing import Any, Callable
+from typing import Any
 
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import H2HDB, load_config
 from hbrowser import ExHDriver, Tag
-from hbrowser.exceptions import (ClientOfflineException,
-                                 InsufficientFundsException)
+from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
 
 class PreLinks:
@@ -130,8 +130,9 @@ class Downloader:
         self.wocount = 0
         self.wocount_max = int(19 * random()) + 1
 
-    def _clear_todownload_gids(
-        self, download_pairs: dict[str, tuple[Callable, dict[str, Any]]]
+    async def _clear_todownload_gids(
+        self,
+        download_pairs: dict[str, tuple[Callable[..., Awaitable[Any]], dict[str, Any]]],
     ) -> dict[GalleryURLParser, bool]:
         gb = dict[GalleryURLParser, bool]()
         with H2HDB(config=self.prelinks.config) as connector:
@@ -142,7 +143,7 @@ class Downloader:
             GalleryURLParser(url=gpair[1]) for gpair in gpair if gpair[1] != ""
         ]
         for gallery in galleries_withurl:
-            gb[gallery] = download_pairs["download_gallery"][0](
+            gb[gallery] = await download_pairs["download_gallery"][0](
                 gallery, **download_pairs["download_gallery"][1]
             )
             with H2HDB(config=self.prelinks.config) as connector:
@@ -153,7 +154,7 @@ class Downloader:
         for gid in gids_withouturl:
             gb = merged_downloaded_galleries(
                 gb,
-                download_pairs["download_gid"][0](
+                await download_pairs["download_gid"][0](
                     gid, **download_pairs["download_gid"][1]
                 ),
             )
@@ -162,9 +163,11 @@ class Downloader:
 
         return gb
 
-    def clear_todownload_gids(self) -> dict[GalleryURLParser, bool]:
+    async def clear_todownload_gids(self) -> dict[GalleryURLParser, bool]:
         deep_download_parameters = dict[str, Any]()
-        download_pairs = dict[str, tuple[Callable, dict[str, Any]]]()
+        download_pairs = dict[
+            str, tuple[Callable[..., Awaitable[Any]], dict[str, Any]]
+        ]()
         download_pairs["download_gallery"] = (
             self.download_gallery,
             deep_download_parameters,
@@ -173,9 +176,9 @@ class Downloader:
             self.download_gid,
             deep_download_parameters,
         )
-        return self._clear_todownload_gids(download_pairs)
+        return await self._clear_todownload_gids(download_pairs)
 
-    def deep_clear_todownload_gids(
+    async def deep_clear_todownload_gids(
         self,
         filters: list[str],
         conditions: list[str],
@@ -184,7 +187,9 @@ class Downloader:
         deep_parameters = dict[str, Any](
             filters=filters, conditions=conditions, skip_check=skip_check
         )
-        download_pairs = dict[str, tuple[Callable, dict[str, Any]]]()
+        download_pairs = dict[
+            str, tuple[Callable[..., Awaitable[Any]], dict[str, Any]]
+        ]()
         download_pairs["download_gallery"] = (
             self.deep_download_gallery,
             deep_parameters,
@@ -193,23 +198,21 @@ class Downloader:
             self.deep_download_gid,
             deep_parameters,
         )
-        return self._clear_todownload_gids(download_pairs)
+        return await self._clear_todownload_gids(download_pairs)
 
-    def _download_gallery(self, gallery: GalleryURLParser) -> bool:
+    async def _download_gallery(self, gallery: GalleryURLParser) -> bool:
         with H2HDB(config=self.prelinks.config) as connector:
             connector.insert_todownload_gid(gallery.gid, gallery.url)
         if (gallery.gid not in self.prelinks.pass_gids) or (
             self.wocount > self.wocount_max
         ):
-            if self.driver.download(gallery):
+            if await self.driver.download(gallery):
                 with H2HDB(config=self.prelinks.config) as connector:
                     if connector.check_gid_by_gid(gallery.gid):
-                        connector.update_redownload_time_to_now_by_gid(
-                            gallery.gid
-                        )
+                        connector.update_redownload_time_to_now_by_gid(gallery.gid)
                 self.prelinks.append(gallery.gid)
                 self.download.append(gallery.gid)
-                sleep(random())
+                await asyncio.sleep(random())
                 self._reset_wocount()
                 isdownloaded = True
             else:
@@ -222,34 +225,36 @@ class Downloader:
             connector.remove_todownload_gid(gallery.gid)
         return isdownloaded
 
-    def download_gallery(self, gallery: GalleryURLParser) -> bool:
-        def raise_exception(time: int, e: Exception) -> None:
+    async def download_gallery(self, gallery: GalleryURLParser) -> bool:
+        async def raise_exception(time: int, e: Exception) -> None:
             if time > 0:
-                sleep(time)
+                await asyncio.sleep(time)
             else:
                 raise e
 
         try:
-            return self._download_gallery(gallery)
+            return await self._download_gallery(gallery)
         except ClientOfflineException as e:
-            raise_exception(self.wait4client, e)
-            return self._download_gallery(gallery)
+            await raise_exception(self.wait4client, e)
+            return await self._download_gallery(gallery)
         except InsufficientFundsException as e:
-            raise_exception(self.retry2download, e)
-            return self._download_gallery(gallery)
+            await raise_exception(self.retry2download, e)
+            return await self._download_gallery(gallery)
 
-    def _download_gid(
-        self, gid: int, download_pair: tuple[Callable, dict[str, Any]]
+    async def _download_gid(
+        self,
+        gid: int,
+        download_pair: tuple[Callable[..., Awaitable[Any]], dict[str, Any]],
     ) -> dict[GalleryURLParser, bool]:
         gb = dict[GalleryURLParser, bool]()
-        galleries = self.driver.search(f"gid:{gid}", isclear=True)
+        galleries = await self.driver.search(f"gid:{gid}", isclear=True)
         match len(galleries):
             case 0:
                 with H2HDB(config=self.prelinks.config) as connector:
                     connector.insert_removed_gallery_gid(gid)
             case 1:
                 gallery = galleries[0]
-                gb[gallery] = download_pair[0](gallery, **download_pair[1])
+                gb[gallery] = await download_pair[0](gallery, **download_pair[1])
                 if gallery.gid != gid:
                     with H2HDB(config=self.prelinks.config) as connector:
                         if connector.check_gid_by_gid(gid):
@@ -258,8 +263,8 @@ class Downloader:
                 raise ValueError("There can only be one gallery or none.")
         return gb
 
-    def download_gid(self, gid: int) -> dict[GalleryURLParser, bool]:
-        return self._download_gid(
+    async def download_gid(self, gid: int) -> dict[GalleryURLParser, bool]:
+        return await self._download_gid(
             gid,
             (
                 self.download_gallery,
@@ -267,7 +272,7 @@ class Downloader:
             ),
         )
 
-    def deep_download_gid(
+    async def deep_download_gid(
         self,
         gid: int,
         filters: list[str],
@@ -277,7 +282,7 @@ class Downloader:
         deep_parameters = dict[str, Any](
             filters=filters, conditions=conditions, skip_check=skip_check
         )
-        return self._download_gid(
+        return await self._download_gid(
             gid,
             (
                 self.deep_download_gallery,
@@ -285,36 +290,36 @@ class Downloader:
             ),
         )
 
-    def download_galleries(
+    async def download_galleries(
         self, galleries: list[GalleryURLParser]
     ) -> dict[GalleryURLParser, bool]:
         gb = dict[GalleryURLParser, bool]()
         for gallery in galleries:
-            gb[gallery] = self.download_gallery(gallery)
+            gb[gallery] = await self.download_gallery(gallery)
         return gb
 
-    def download_tag(
+    async def download_tag(
         self, tag: Tag, conditions: list[str]
     ) -> dict[GalleryURLParser, bool]:
         gb = dict[GalleryURLParser, bool]()
         if len(conditions) == 0:
-            self.driver.get(tag.href)
-            galleries = self.driver.search("", isclear=False)
+            await self.driver.get(tag.href)
+            galleries = await self.driver.search("", isclear=False)
             gb = merged_downloaded_galleries(
                 gb,
-                self.download_galleries(galleries),
+                await self.download_galleries(galleries),
             )
         else:
             for condition in conditions:
-                self.driver.get(tag.href)
-                galleries = self.driver.search(condition, isclear=False)
+                await self.driver.get(tag.href)
+                galleries = await self.driver.search(condition, isclear=False)
                 gb = merged_downloaded_galleries(
                     gb,
-                    self.download_galleries(galleries),
+                    await self.download_galleries(galleries),
                 )
         return gb
 
-    def deep_download_gallery(
+    async def deep_download_gallery(
         self,
         gallery: GalleryURLParser,
         filters: list[str],
@@ -324,21 +329,21 @@ class Downloader:
         """
         Example
         g = GalleryURLParser("https://exhentai.org/g/xxxx/xxxx/")
-        deep_download_gallery(
+        await deep_download_gallery(
             g,
             ["artist", "group"],
             ["language:chinese$", "language:speechless$"],
         )
         """
         gb = dict[GalleryURLParser, bool]()
-        if self.download_gallery(gallery) or skip_check:
+        if await self.download_gallery(gallery) or skip_check:
             for filter in filters:
-                taglist: list[Tag] = self.driver.gallery2tag(
+                taglist: list[Tag] = await self.driver.gallery2tag(
                     gallery,
                     filter=filter,
                 )
                 for tag in taglist:
                     gb = merged_downloaded_galleries(
-                        gb, self.download_tag(tag, conditions)
+                        gb, await self.download_tag(tag, conditions)
                     )
         return gb
