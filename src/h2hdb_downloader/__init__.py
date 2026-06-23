@@ -1,3 +1,3 @@
-__all__ = ["PreLinks", "Downloader"]
+__all__ = ["Downloader", "TagCascadePolicy"]
 
-from .downloader import Downloader, PreLinks
+from .downloader import Downloader, TagCascadePolicy
