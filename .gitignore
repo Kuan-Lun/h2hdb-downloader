@@ -3,8 +3,10 @@ __pycache__
 *.pyc
 *.pyo
 *.egg-info
-build
-dist
-LICENSE
 !.vscode
 !.github
+
+uv.lock
+
+# macOS
+.DS_Store
