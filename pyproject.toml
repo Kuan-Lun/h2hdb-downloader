@@ -9,6 +9,7 @@ description = "Download gallery and insert into h2hdb"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
 license = { text = "GNU Affero General Public License v3" }
+requires-python = ">=3.13,<3.15"
 dependencies = ["h2hdb>=0.9.1.9", "hbrowser>=0.26.6"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -17,6 +18,14 @@ classifiers = [
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=26.5.1",
+    "ruff>=0.15.16",
+    "mypy>=2.1.0",
+    "pymarkdownlnt>=0.9.37",
 ]
 
 [project.urls]
@@ -28,3 +37,12 @@ Tracker = "https://github.com/Kuan-Lun/h2hdb-downloader/issues"
 packages = ["h2hdb_downloader"]
 package-dir = { h2hdb_downloader = "src/h2hdb_downloader" }
 package-data = { h2hdb_downloader = ["py.typed"] }
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+# Mirror flake8's Black-compatible ignore set (see .vscode/settings.json).
+# These pycodestyle rules conflict with Black's formatting choices.
+extend-ignore = ["E203", "E226", "E501"]

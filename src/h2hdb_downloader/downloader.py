@@ -54,7 +54,6 @@ class PreLinks:
         with H2HDB(config=self.config) as connector:
             with open(
                 self.todownload_gids_filename,
-                mode="r",
                 newline="",
                 encoding="utf-8",
             ) as file:
@@ -82,7 +81,7 @@ class PreLinks:
         with H2HDB(config=self.config) as connector:
             connector.remove_todownload_gid(gid)
 
-    def renew(self):
+    def renew(self) -> None:
         self.load_todownload_gids()
 
     def append(self, gid: int) -> None:
