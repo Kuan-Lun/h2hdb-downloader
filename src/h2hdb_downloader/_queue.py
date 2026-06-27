@@ -17,8 +17,6 @@ ties together:
   long-running session can pick up new requests without restarting.
 """
 
-from __future__ import annotations
-
 import csv
 import os
 from dataclasses import dataclass

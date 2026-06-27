@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import csv
 from collections.abc import Callable
 from pathlib import Path
