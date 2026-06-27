@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from random import random
 from typing import Protocol
 
@@ -30,7 +31,7 @@ from h2hdb import H2HDB, H2HDBConfig
 __all__: list[str] = []
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TodownloadEntry:
     """One row of the durable download queue: a gid, optionally with its url."""
 
@@ -84,30 +85,32 @@ def should_attempt_download(
     return (gid not in pass_gids) or (wocount > wocount_max)
 
 
-def read_todownload_csv(path: str) -> list[TodownloadEntry]:
-    with open(path, newline="", encoding="utf-8") as file:
+def read_todownload_csv(path: Path) -> list[TodownloadEntry]:
+    with path.open(newline="", encoding="utf-8") as file:
         rows = list(csv.reader(file))
     return parse_todownload_csv_rows(rows[1:])
 
 
-def write_empty_todownload_csv(path: str) -> None:
-    with open(path, mode="w", newline="", encoding="utf-8") as file:
+def write_empty_todownload_csv(path: Path) -> None:
+    with path.open(mode="w", newline="", encoding="utf-8") as file:
         csv.writer(file).writerow(["gid", "url"])
 
 
-def ensure_todownload_csv(path: str) -> None:
-    if not os.path.exists(path):
+def ensure_todownload_csv(path: Path) -> None:
+    if not path.exists():
         write_empty_todownload_csv(path)
 
 
 class GalleryQueue:
     """Owns the durable queue/dedup state backing a single ``Downloader``."""
 
-    def __init__(self, config: H2HDBConfig, csv_path: str | None) -> None:
+    def __init__(
+        self, config: H2HDBConfig, csv_path: str | os.PathLike[str] | None
+    ) -> None:
         """``csv_path=None`` disables the manual CSV queue entirely; the
         durable in-flight log and dedup cache work the same either way."""
         self.config = config
-        self.csv_path = csv_path
+        self.csv_path = Path(csv_path) if csv_path is not None else None
         self.wocount = 0
         self.wocount_max = random_wocount_max()
         self.refresh()

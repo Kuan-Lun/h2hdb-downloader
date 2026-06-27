@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from random import random
@@ -12,7 +13,7 @@ from hbrowser.exceptions import ClientOfflineException, InsufficientFundsExcepti
 
 from ._queue import GalleryQueue
 
-_DownloadFn = Callable[..., Awaitable[dict[GalleryURLParser, bool]]]
+type _DownloadFn = Callable[..., Awaitable[dict[GalleryURLParser, bool]]]
 
 
 def _merge_results(
@@ -24,7 +25,7 @@ def _merge_results(
     }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TagCascadePolicy:
     """How to cascade from a gallery into its related works.
 
@@ -61,7 +62,7 @@ class Downloader:
         self,
         driver: ExHDriver,
         config_path: str,
-        csv_path: str | None = None,
+        csv_path: str | os.PathLike[str] | None = None,
         *,
         wait4client: int,
         retry2download: int,

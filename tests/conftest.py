@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -140,8 +139,8 @@ def fake_driver() -> FakeDriver:
 def queue_factory(
     patch_h2hdb: FakeDBStore, tmp_path: Path
 ) -> Callable[..., GalleryQueue]:
-    def make(csv_path: str | None = None) -> GalleryQueue:
-        path = csv_path or os.path.join(str(tmp_path), "todownload_gids.csv")
+    def make(csv_path: str | Path | None = None) -> GalleryQueue:
+        path = csv_path or tmp_path / "todownload_gids.csv"
         return GalleryQueue(config=cast(H2HDBConfig, object()), csv_path=path)
 
     return make
@@ -162,7 +161,7 @@ def downloader_factory(
         return Downloader(
             cast(ExHDriver, fake_driver),
             config_path="unused.json",
-            csv_path=os.path.join(str(tmp_path), "todownload_gids.csv"),
+            csv_path=tmp_path / "todownload_gids.csv",
             wait4client=wait4client,
             retry2download=retry2download,
         )

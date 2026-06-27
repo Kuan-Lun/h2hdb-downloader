@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -17,9 +16,9 @@ if TYPE_CHECKING:
 def test_creates_csv_with_header_if_missing(
     queue_factory: Callable[..., GalleryQueue], tmp_path: Path
 ) -> None:
-    path = os.path.join(str(tmp_path), "todownload_gids.csv")
+    path = tmp_path / "todownload_gids.csv"
     queue_factory(path)
-    with open(path, newline="", encoding="utf-8") as file:
+    with path.open(newline="", encoding="utf-8") as file:
         rows = list(csv.reader(file))
     assert rows == [["gid", "url"]]
 
@@ -27,8 +26,8 @@ def test_creates_csv_with_header_if_missing(
 def test_csv_rows_are_absorbed_into_db_and_csv_is_emptied(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore, tmp_path: Path
 ) -> None:
-    path = os.path.join(str(tmp_path), "todownload_gids.csv")
-    with open(path, mode="w", newline="", encoding="utf-8") as file:
+    path = tmp_path / "todownload_gids.csv"
+    with path.open(mode="w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(["gid", "url"])
         writer.writerow(["", "https://exhentai.org/g/123/abcdef0123/"])
@@ -40,7 +39,7 @@ def test_csv_rows_are_absorbed_into_db_and_csv_is_emptied(
         123: "https://exhentai.org/g/123/abcdef0123/",
         456: "",
     }
-    with open(path, newline="", encoding="utf-8") as file:
+    with path.open(newline="", encoding="utf-8") as file:
         rows = list(csv.reader(file))
     assert rows == [["gid", "url"]]
 
@@ -48,11 +47,11 @@ def test_csv_rows_are_absorbed_into_db_and_csv_is_emptied(
 def test_refresh_reabsorbs_csv_rows_added_after_construction(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore, tmp_path: Path
 ) -> None:
-    path = os.path.join(str(tmp_path), "todownload_gids.csv")
+    path = tmp_path / "todownload_gids.csv"
     queue = queue_factory(path)
     assert fake_store.todownload == {}
 
-    with open(path, mode="a", newline="", encoding="utf-8") as file:
+    with path.open(mode="a", newline="", encoding="utf-8") as file:
         csv.writer(file).writerow(["789", ""])
 
     queue.refresh()
@@ -106,7 +105,7 @@ def test_csv_path_none_disables_manual_queue_without_touching_filesystem(
     queue = GalleryQueue(config=cast(H2HDBConfig, object()), csv_path=None)
 
     assert queue.todownload_gids() == []
-    assert list(os.listdir(tmp_path)) == []
+    assert list(tmp_path.iterdir()) == []
 
     queue.mark_inflight(1, "https://exhentai.org/g/1/abcdef0123/")
     assert TodownloadEntry(1, "https://exhentai.org/g/1/abcdef0123/") in (
