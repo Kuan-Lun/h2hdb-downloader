@@ -24,18 +24,36 @@ class FakeDBStore:
     redownload_time_updates: list[int] = field(default_factory=list)
 
 
+class FakeGalleryGIDs:
+    def __init__(self, store: FakeDBStore) -> None:
+        self.store = store
+
+    def get_gids(self) -> list[int]:
+        return list(self.store.gids)
+
+    def check_gid_by_gid(self, gid: int) -> bool:
+        return gid in self.store.gids
+
+
+class FakeRemovedGalleries:
+    def __init__(self, store: FakeDBStore) -> None:
+        self.store = store
+
+    def insert_removed_gallery_gid(self, gid: int) -> None:
+        self.store.removed_gids.add(gid)
+
+
 class FakeConnector:
     def __init__(self, store: FakeDBStore) -> None:
         self.store = store
+        self.gallery_gids = FakeGalleryGIDs(store)
+        self.removed_galleries = FakeRemovedGalleries(store)
 
     def __enter__(self) -> FakeConnector:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
         return None
-
-    def get_gids(self) -> list[int]:
-        return list(self.store.gids)
 
     def get_pending_download_gids(self) -> list[int]:
         return list(self.store.pending_download_gids)
@@ -51,14 +69,8 @@ class FakeConnector:
     def remove_todownload_gid(self, gid: int) -> None:
         self.store.todownload.pop(gid, None)
 
-    def check_gid_by_gid(self, gid: int) -> bool:
-        return gid in self.store.gids
-
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
         self.store.redownload_time_updates.append(gid)
-
-    def insert_removed_gallery_gid(self, gid: int) -> None:
-        self.store.removed_gids.add(gid)
 
     def insert_todelete_gid(self, gid: int) -> None:
         self.store.todelete_gids.add(gid)

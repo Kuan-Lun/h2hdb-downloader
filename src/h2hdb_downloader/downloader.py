@@ -116,7 +116,7 @@ class Downloader:
                 downloaded = False
             if downloaded:
                 with H2HDB(config=self._queue.config) as connector:
-                    if connector.check_gid_by_gid(gallery.gid):
+                    if connector.gallery_gids.check_gid_by_gid(gallery.gid):
                         connector.update_redownload_time_to_now_by_gid(gallery.gid)
                 self._queue.mark_done(gallery.gid)
                 await asyncio.sleep(random())
@@ -146,7 +146,7 @@ class Downloader:
         match len(galleries):
             case 0:
                 with H2HDB(config=self._queue.config) as connector:
-                    connector.insert_removed_gallery_gid(gid)
+                    connector.removed_galleries.insert_removed_gallery_gid(gid)
             case 1:
                 gallery = galleries[0]
                 gb[gallery.gid] = (await download(gallery, **download_kwargs))[
@@ -154,7 +154,7 @@ class Downloader:
                 ]
                 if gallery.gid != gid:
                     with H2HDB(config=self._queue.config) as connector:
-                        if connector.check_gid_by_gid(gid):
+                        if connector.gallery_gids.check_gid_by_gid(gid):
                             connector.insert_todelete_gid(gid)
             case _:
                 raise ValueError("There can only be one gallery or none.")

@@ -117,7 +117,7 @@ class GalleryQueue:
         """Re-absorb the CSV queue into the database, then reload cached state."""
         self._sync_csv_into_db()
         with H2HDB(config=self.config) as connector:
-            downloaded_gids = connector.get_gids()
+            downloaded_gids = connector.gallery_gids.get_gids()
             self.pending_download_gids = connector.get_pending_download_gids()
             todownload_gids = self._fetch_todownload_gids(connector)
         self.pass_gids = set(
