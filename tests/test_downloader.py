@@ -18,11 +18,6 @@ def gallery(gid: int) -> GalleryURLParser:
     return GalleryURLParser(url=f"https://exhentai.org/g/{gid}/deadbeef00/")
 
 
-def by_gid(result: dict[GalleryURLParser, bool]) -> dict[int, bool]:
-    """``GalleryURLParser`` has no value equality, so compare results by gid."""
-    return {gallery.gid: downloaded for gallery, downloaded in result.items()}
-
-
 def gids_of(galleries: list[GalleryURLParser]) -> list[int]:
     return [gallery.gid for gallery in galleries]
 
@@ -36,7 +31,7 @@ async def test_download_marks_done_and_updates_redownload_time(
 
     result = await downloader.download_by_gallery(gallery(1))
 
-    assert by_gid(result) == {1: True}
+    assert result == {1: True}
     assert fake_store.redownload_time_updates == [1]
     assert 1 in downloader._queue.pass_gids
     assert fake_store.todownload == {}
@@ -54,7 +49,7 @@ async def test_download_skips_already_settled_gid_without_hitting_driver(
     result = await downloader.download_by_gallery(gallery(1))
 
     assert fake_driver.download_calls == []
-    assert by_gid(result) == {1: False}
+    assert result == {1: False}
 
 
 async def test_wocount_overflow_forces_reverify_even_when_settled(
@@ -87,7 +82,7 @@ async def test_client_offline_retries_and_eventually_succeeds(
 
     result = await downloader.download_by_gallery(gallery(1))
 
-    assert by_gid(result) == {1: True}
+    assert result == {1: True}
     assert attempts["count"] == 2
 
 
@@ -126,7 +121,7 @@ async def test_download_by_gid_marks_todelete_when_gid_redirects(
 
     result = await downloader.download_by_gid(999)
 
-    assert by_gid(result) == {1: True}
+    assert result == {1: True}
     assert 999 in fake_store.todelete_gids
 
 
@@ -144,7 +139,7 @@ async def test_deep_download_cascades_into_tags(
         seed, TagCascadePolicy(filters=("artist",), conditions=()), skip_check=False
     )
 
-    assert by_gid(result) == {1: True, 2: True}
+    assert result == {1: True, 2: True}
     assert fake_driver.get_calls == [tag.href]
 
 
@@ -163,7 +158,7 @@ async def test_deep_download_skips_cascade_when_seed_skipped_and_no_skip_check(
         skip_check=False,
     )
 
-    assert by_gid(result) == {1: False}
+    assert result == {1: False}
     assert fake_driver.gallery2tag_calls == []
 
 
@@ -186,7 +181,7 @@ async def test_deep_download_skip_check_forces_cascade_despite_seed_being_skippe
         seed, TagCascadePolicy(filters=("artist",), conditions=()), skip_check=True
     )
 
-    assert by_gid(result) == {1: False, 2: True}
+    assert result == {1: False, 2: True}
 
 
 async def test_download_by_gid_settles_pending_gid_even_when_removed(
@@ -235,8 +230,8 @@ async def test_application_loop_drains_residual_queue_then_redownloads_pending(
     fake_driver: FakeDriver,
 ) -> None:
     """Mirrors the loop example-main.py writes against the public API:
-    drain_queue() once, then settle every pending gid via download_by_gid()
-    plus deep_download_by_gallery(), with no private state touched."""
+    drain_queue() once, then settle every pending gid via deep_download_by_gid(),
+    with no private state touched."""
     # Simulate a prior run that crashed mid-download: gid 1 is left in the
     # in-flight log, and gid 2 is flagged by the DB as needing a redownload.
     fake_store.gids = {1, 2}
@@ -249,12 +244,7 @@ async def test_application_loop_drains_residual_queue_then_redownloads_pending(
 
     await downloader.drain_queue(policy, skip_check=True)
     for gid in downloader.pending_redownload_gids():
-        gb = await downloader.download_by_gid(gid)
-        for gallery_, downloaded in gb.items():
-            if downloaded:
-                await downloader.deep_download_by_gallery(
-                    gallery_, policy, skip_check=True
-                )
+        await downloader.deep_download_by_gid(gid, policy, skip_check=True)
 
     assert set(gids_of(fake_driver.download_calls)) == {1, 2}
     assert downloader.pending_redownload_gids() == []
@@ -294,5 +284,5 @@ async def test_drain_queue_url_entry_skips_fallback_when_direct_download_succeed
 
     result = await downloader.drain_queue(policy, skip_check=True)
 
-    assert by_gid(result) == {1: True}
+    assert result == {1: True}
     assert fake_driver.search_calls == []

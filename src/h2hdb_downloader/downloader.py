@@ -11,12 +11,10 @@ from hbrowser.exceptions import ClientOfflineException, InsufficientFundsExcepti
 
 from ._queue import GalleryQueue
 
-type _DownloadFn = Callable[..., Awaitable[dict[GalleryURLParser, bool]]]
+type _DownloadFn = Callable[..., Awaitable[dict[int, bool]]]
 
 
-def _merge_results(
-    dict1: dict[GalleryURLParser, bool], dict2: dict[GalleryURLParser, bool]
-) -> dict[GalleryURLParser, bool]:
+def _merge_results(dict1: dict[int, bool], dict2: dict[int, bool]) -> dict[int, bool]:
     return {
         key: dict1.get(key, False) or dict2.get(key, False)
         for key in set(dict1) | set(dict2)
@@ -80,13 +78,17 @@ class Downloader:
 
     async def download_by_gallery(
         self, target: GalleryURLParser | Iterable[GalleryURLParser]
-    ) -> dict[GalleryURLParser, bool]:
-        """Download one known gallery, or several, with retry on transient errors."""
+    ) -> dict[int, bool]:
+        """Download one known gallery, or several, with retry on transient errors.
+
+        Results are keyed by gid rather than the ``GalleryURLParser`` itself,
+        since that class isn't hashable.
+        """
         if isinstance(target, GalleryURLParser):
-            return {target: await self._download_one(target)}
-        gb = dict[GalleryURLParser, bool]()
+            return {target.gid: await self._download_one(target)}
+        gb = dict[int, bool]()
         for gallery in target:
-            gb[gallery] = await self._download_one(gallery)
+            gb[gallery.gid] = await self._download_one(gallery)
         return gb
 
     async def _download_one(self, gallery: GalleryURLParser) -> bool:
@@ -123,7 +125,7 @@ class Downloader:
         finally:
             self._queue.clear_inflight(gallery.gid)
 
-    async def download_by_gid(self, gid: int) -> dict[GalleryURLParser, bool]:
+    async def download_by_gid(self, gid: int) -> dict[int, bool]:
         """Resolve a bare gid to its gallery (via search) and download it.
 
         Always settles ``gid`` in the pending-redownload queue before
@@ -138,8 +140,8 @@ class Downloader:
         gid: int,
         download: _DownloadFn,
         **download_kwargs: object,
-    ) -> dict[GalleryURLParser, bool]:
-        gb = dict[GalleryURLParser, bool]()
+    ) -> dict[int, bool]:
+        gb = dict[int, bool]()
         galleries = await self.driver.search(f"gid:{gid}", isclear=True)
         match len(galleries):
             case 0:
@@ -147,7 +149,9 @@ class Downloader:
                     connector.insert_removed_gallery_gid(gid)
             case 1:
                 gallery = galleries[0]
-                gb[gallery] = (await download(gallery, **download_kwargs))[gallery]
+                gb[gallery.gid] = (await download(gallery, **download_kwargs))[
+                    gallery.gid
+                ]
                 if gallery.gid != gid:
                     with H2HDB(config=self._queue.config) as connector:
                         if connector.check_gid_by_gid(gid):
@@ -159,9 +163,9 @@ class Downloader:
 
     async def download_by_tag(
         self, tag: Tag, conditions: Sequence[str]
-    ) -> dict[GalleryURLParser, bool]:
+    ) -> dict[int, bool]:
         """Download every gallery under ``tag`` matching each of ``conditions``."""
-        gb = dict[GalleryURLParser, bool]()
+        gb = dict[int, bool]()
         searches = conditions or [""]
         for condition in searches:
             await self.driver.get(tag.href)
@@ -174,7 +178,7 @@ class Downloader:
         gallery: GalleryURLParser,
         policy: TagCascadePolicy,
         skip_check: bool = False,
-    ) -> dict[GalleryURLParser, bool]:
+    ) -> dict[int, bool]:
         """Download ``gallery``, then cascade into its artist/group tags.
 
         ``skip_check`` forces the cascade to run even when ``gallery`` itself
@@ -183,7 +187,7 @@ class Downloader:
         """
         downloaded = await self.download_by_gallery(gallery)
         gb = dict(downloaded)
-        if downloaded[gallery] or skip_check:
+        if downloaded[gallery.gid] or skip_check:
             for filter in policy.filters:
                 taglist = await self.driver.gallery2tag(gallery, filter=filter)
                 for tag in taglist:
@@ -197,7 +201,7 @@ class Downloader:
         gid: int,
         policy: TagCascadePolicy,
         skip_check: bool = False,
-    ) -> dict[GalleryURLParser, bool]:
+    ) -> dict[int, bool]:
         return await self._resolve_and_download(
             gid,
             self.deep_download_by_gallery,
@@ -211,17 +215,17 @@ class Downloader:
 
     async def drain_queue(
         self, policy: TagCascadePolicy, skip_check: bool = True
-    ) -> dict[GalleryURLParser, bool]:
+    ) -> dict[int, bool]:
         """Process everything currently queued: manually-requested gids/urls
         plus anything left in-flight by a previous, interrupted run."""
-        gb = dict[GalleryURLParser, bool]()
+        gb = dict[int, bool]()
         for entry in self._queue.todownload_gids():
             if entry.url:
                 gallery = GalleryURLParser(url=entry.url)
                 direct_result = await self.deep_download_by_gallery(
                     gallery, policy, skip_check
                 )
-                if direct_result[gallery]:
+                if direct_result[gallery.gid]:
                     gb = _merge_results(gb, direct_result)
                 else:
                     # Downloading straight from a URL never falls back to a

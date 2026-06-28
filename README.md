@@ -67,7 +67,7 @@ resolves a bare gid to its gallery via search first, then does the same
 thing.
 
 - `await download_by_gallery(target)` — download one `GalleryURLParser`, or
-  an iterable of them. Returns `{gallery: downloaded}` for each. Retries
+  an iterable of them. Returns `{gid: downloaded}` for each. Retries
   automatically on `ClientOfflineException` (waits `wait4client` seconds)
   and `InsufficientFundsException` (waits `retry2download` seconds); a wait
   of `0` means "don't retry, raise immediately."
@@ -133,12 +133,7 @@ async def main():
 
         await downloader.drain_queue(policy, skip_check=True)
         for gid in downloader.pending_redownload_gids():
-            gb = await downloader.download_by_gid(gid)
-            for downloaded_gallery, downloaded in gb.items():
-                if downloaded:
-                    await downloader.deep_download_by_gallery(
-                        downloaded_gallery, policy, skip_check=True
-                    )
+            await downloader.deep_download_by_gid(gid, policy, skip_check=True)
 
 
 asyncio.run(main())
