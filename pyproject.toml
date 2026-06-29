@@ -10,7 +10,7 @@ readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
 license = { text = "GNU Affero General Public License v3" }
 requires-python = ">=3.14,<3.15"
-dependencies = ["h2hdb>=0.10.3.0", "hbrowser>=0.33.2"]
+dependencies = ["h2hdb>=0.10.4.0", "hbrowser>=0.33.2"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
