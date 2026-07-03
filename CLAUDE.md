@@ -8,6 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The package has exactly two public exports (`src/h2hdb_downloader/__init__.py`): `PreLinks` and `Downloader`, both defined in `src/h2hdb_downloader/downloader.py`.
 
+## Communication
+
+- Claude 必須以繁體中文回答所有對話內容，不論使用者以何種語言提問；程式碼、指令、檔名、專有名詞等仍維持原文。
+
 ## Build & Development Commands
 
 ```bash
