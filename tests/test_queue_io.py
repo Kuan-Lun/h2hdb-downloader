@@ -1,14 +1,24 @@
 import csv
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from h2hdb import H2HDBConfig
+import pytest
+from h2hdb import DownloadRequest, H2HDBConfig
 
-from h2hdb_downloader._queue import GalleryQueue, TodownloadEntry
+from h2hdb_downloader._queue import GalleryQueue
 
 if TYPE_CHECKING:
     from .conftest import FakeDBStore
+
+
+def claim_paths(path: Path) -> list[Path]:
+    return sorted(
+        candidate
+        for candidate in path.parent.iterdir()
+        if candidate.name.startswith(f".{path.name}.claim-")
+    )
 
 
 def test_creates_csv_with_header_if_missing(
@@ -33,68 +43,226 @@ def test_csv_rows_are_absorbed_into_db_and_csv_is_emptied(
 
     queue_factory(path)
 
-    assert fake_store.todownload == {
-        123: "https://exhentai.org/g/123/abcdef0123/",
-        456: "",
-    }
+    assert {
+        gid: request.url for gid, request in fake_store.download_requests.items()
+    } == {123: "https://exhentai.org/g/123/abcdef0123/", 456: ""}
     with path.open(newline="", encoding="utf-8") as file:
         rows = list(csv.reader(file))
     assert rows == [["gid", "url"]]
 
 
-def test_refresh_reabsorbs_csv_rows_added_after_construction(
+def test_download_requests_reabsorbs_csv_rows_added_after_construction(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore, tmp_path: Path
 ) -> None:
     path = tmp_path / "todownload_gids.csv"
     queue = queue_factory(path)
-    assert fake_store.todownload == {}
+    assert fake_store.download_requests == {}
 
     with path.open(mode="a", newline="", encoding="utf-8") as file:
         csv.writer(file).writerow(["789", ""])
 
-    queue.refresh()
-    assert 789 in fake_store.todownload
+    requests = queue.download_requests()
+
+    assert [request.gid for request in requests] == [789]
+    assert 789 in fake_store.download_requests
 
 
-def test_residual_todownload_row_from_interrupted_run_survives_construction(
-    queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
+def test_database_failure_preserves_claim_for_next_startup(
+    queue_factory: Callable[..., GalleryQueue],
+    fake_store: FakeDBStore,
+    tmp_path: Path,
 ) -> None:
-    """A gid left mid-flight by a crashed prior run must not be lost: it's
-    visible via todownload_gids() so the caller can resume it, and excluded
-    from pass_gids so it won't be skipped as already-settled."""
-    fake_store.gids = {1}
-    fake_store.todownload = {1: "https://exhentai.org/g/1/abcdef0123/"}
+    path = tmp_path / "todownload_gids.csv"
+    with path.open(mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["gid", "url"])
+        writer.writerow(["123", ""])
+    fake_store.request_download_error = RuntimeError("database unavailable")
 
-    queue = queue_factory()
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        queue_factory(path)
 
-    assert TodownloadEntry(1, "https://exhentai.org/g/1/abcdef0123/") in (
-        queue.todownload_gids()
+    assert len(claim_paths(path)) == 1
+    assert fake_store.download_requests == {}
+
+    fake_store.request_download_error = None
+    queue_factory(path)
+
+    assert set(fake_store.download_requests) == {123}
+    assert claim_paths(path) == []
+
+
+def test_append_during_atomic_rotation_remains_in_inbox(
+    queue_factory: Callable[..., GalleryQueue],
+    fake_store: FakeDBStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "todownload_gids.csv"
+    with path.open(mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["gid", "url"])
+        writer.writerow(["123", ""])
+
+    original_replace = os.replace
+    appended = False
+
+    def replace_and_append(
+        source: str | os.PathLike[str], destination: str | os.PathLike[str]
+    ) -> None:
+        nonlocal appended
+        original_replace(source, destination)
+        if not appended and Path(source) == path:
+            appended = True
+            # Simulate an operator opening the inbox in the tiny interval after
+            # rotation but before the downloader recreates its header.
+            with path.open(mode="a", newline="", encoding="utf-8") as file:
+                csv.writer(file).writerow(["456", ""])
+
+    monkeypatch.setattr(os, "replace", replace_and_append)
+    queue = queue_factory(path)
+
+    assert set(fake_store.download_requests) == {123}
+    monkeypatch.setattr(os, "replace", original_replace)
+
+    requests = queue.download_requests()
+
+    assert {request.gid for request in requests} == {123, 456}
+    with path.open(newline="", encoding="utf-8") as file:
+        assert list(csv.reader(file)) == [["gid", "url"]]
+
+
+def test_old_file_descriptor_append_keeps_claim_for_next_replay(
+    queue_factory: Callable[..., GalleryQueue],
+    fake_store: FakeDBStore,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "todownload_gids.csv"
+    with path.open(mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["gid", "url"])
+        writer.writerow(["123", ""])
+
+    old_descriptor = path.open(mode="a", newline="", encoding="utf-8")
+    old_writer = csv.writer(old_descriptor)
+
+    def append_through_old_descriptor() -> None:
+        fake_store.request_download_observer = None
+        old_writer.writerow(["456", ""])
+        old_descriptor.flush()
+
+    fake_store.request_download_observer = append_through_old_descriptor
+    try:
+        queue = queue_factory(path)
+    finally:
+        old_descriptor.close()
+
+    assert set(fake_store.download_requests) == {123}
+    assert len(claim_paths(path)) == 1
+
+    requests = queue.download_requests()
+
+    assert {request.gid for request in requests} == {123, 456}
+    assert claim_paths(path) == []
+
+
+def test_crash_claims_replay_in_creation_order(
+    queue_factory: Callable[..., GalleryQueue],
+    fake_store: FakeDBStore,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "todownload_gids.csv"
+    old_claim = path.with_name(f".{path.name}.claim-{1:020d}-old")
+    new_claim = path.with_name(f".{path.name}.claim-{2:020d}-new")
+    for claim_path, url in (
+        (old_claim, "https://exhentai.org/g/123/aaaaaaaaaa/"),
+        (new_claim, "https://exhentai.org/g/123/bbbbbbbbbb/"),
+    ):
+        with claim_path.open(mode="w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["gid", "url"])
+            writer.writerow(["123", url])
+
+    queue_factory(path)
+
+    assert (
+        fake_store.download_requests[123].url
+        == "https://exhentai.org/g/123/bbbbbbbbbb/"
     )
-    assert 1 not in queue.pass_gids
+    assert claim_paths(path) == []
 
 
-def test_mark_inflight_then_clear_inflight_round_trips(
+def test_durable_request_survives_construction_and_is_read_live(
+    queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
+) -> None:
+    request = DownloadRequest(
+        1, "https://exhentai.org/g/1/abcdef0123/", "existing-token"
+    )
+    fake_store.download_requests = {1: request}
+
+    queue = queue_factory()
+
+    assert queue.download_requests() == [request]
+
+
+def test_request_download_returns_token_and_completion_is_conditional(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
     queue = queue_factory()
-    queue.mark_inflight(1, "https://exhentai.org/g/1/abcdef0123/")
-    assert 1 in fake_store.todownload
+    first = queue.request_download(1, "https://exhentai.org/g/1/abcdef0123/")
+    second = queue.request_download(1)
 
-    queue.clear_inflight(1)
-    assert 1 not in fake_store.todownload
+    assert first.token != second.token
+    assert second.url == first.url
+
+    queue.complete_download_request(first)
+    assert fake_store.download_requests[1] == second
+
+    queue.complete_download_request(second)
+    assert fake_store.download_requests == {}
 
 
-def test_mark_done_settles_gid_and_drops_it_from_pending(
+def test_request_identity_uses_gid_and_token_not_mutable_url(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
-    fake_store.pending_download_gids = [1]
     queue = queue_factory()
-    assert 1 in queue.pending_download_gids
+    request = queue.request_download(1, "https://exhentai.org/g/1/abcdef0123/")
+    fake_store.download_requests[1] = DownloadRequest(
+        gid=1,
+        url="https://e-hentai.org/g/1/abcdef0123/",
+        token=request.token,
+    )
 
-    queue.mark_done(1)
+    assert queue.is_current(request)
+    queue.complete_download_request(request)
+    assert fake_store.download_requests == {}
 
-    assert 1 in queue.pass_gids
-    assert 1 not in queue.pending_download_gids
+
+def test_should_attempt_reads_database_state_live(
+    queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
+) -> None:
+    queue = queue_factory()
+    assert queue.should_attempt(1)
+
+    fake_store.gids.add(1)
+    assert not queue.should_attempt(1)
+
+    fake_store.pending_download_gids.append(1)
+    assert queue.should_attempt(1)
+
+    fake_store.pending_download_gids.clear()
+    queue.request_download(1)
+    assert queue.should_attempt(1)
+
+
+def test_pending_redownload_gids_reads_database_state_live(
+    queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
+) -> None:
+    queue = queue_factory()
+    assert queue.pending_redownload_gids() == []
+
+    fake_store.pending_download_gids.append(1)
+    assert queue.pending_redownload_gids() == [1]
 
 
 def test_csv_path_none_disables_manual_queue_without_touching_filesystem(
@@ -102,23 +270,21 @@ def test_csv_path_none_disables_manual_queue_without_touching_filesystem(
 ) -> None:
     queue = GalleryQueue(config=cast(H2HDBConfig, object()), csv_path=None)
 
-    assert queue.todownload_gids() == []
+    assert queue.download_requests() == []
     assert list(tmp_path.iterdir()) == []
 
-    queue.mark_inflight(1, "https://exhentai.org/g/1/abcdef0123/")
-    assert TodownloadEntry(1, "https://exhentai.org/g/1/abcdef0123/") in (
-        queue.todownload_gids()
-    )
+    request = queue.request_download(1, "https://exhentai.org/g/1/abcdef0123/")
+    assert queue.download_requests() == [request]
 
 
-def test_note_attempt_outcome_resets_wocount_on_success_and_increments_on_skip(
+def test_skip_and_success_update_wocount(
     queue_factory: Callable[..., GalleryQueue],
 ) -> None:
     queue = queue_factory()
     queue.wocount = 5
 
-    queue.note_attempt_outcome(downloaded=False)
+    queue.note_skip()
     assert queue.wocount == 6
 
-    queue.note_attempt_outcome(downloaded=True)
+    queue.note_download_success()
     assert queue.wocount == 0

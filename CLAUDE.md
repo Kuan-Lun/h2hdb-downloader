@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `h2hdb-downloader` is a small Python library that automates downloading galleries (from exhentai/e-hentai via the `hbrowser` package) and recording their state in an `h2hdb` database. It is published to PyPI and consumed as a dependency by other projects — it has no CLI entry point or standalone runtime of its own.
 
-The package has exactly two public exports (`src/h2hdb_downloader/__init__.py`): `PreLinks` and `Downloader`, both defined in `src/h2hdb_downloader/downloader.py`.
+The package has exactly two public exports (`src/h2hdb_downloader/__init__.py`):
+`Downloader` and `TagCascadePolicy`, both defined in
+`src/h2hdb_downloader/downloader.py`.
 
 ## Communication
 

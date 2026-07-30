@@ -1,17 +1,14 @@
-"""Internal collaborator: durable download queue and dedup tracking.
+"""Internal collaborator: durable download requests and dedup tracking.
 
-Not part of the public API. ``Downloader`` is the only public export of this
-package; everything here exists to support it.
+Not part of the public API. Everything here exists to support ``Downloader``.
 
 The underlying database tracks three independent things that this module
 ties together:
 
-- an in-flight work log (``todownload_gids``) that ``Downloader`` writes to
-  *before* attempting a download and clears *after*, so an interrupted
-  process can resume exactly where it left off;
-- a completion cache (``pass_gids``) answering "do we already know this gid
-  is downloaded and not flagged for redownload?", used to skip redundant
-  network calls;
+- durable download requests (``todownload_gids``), each identified by an
+  immutable token so completing an old attempt cannot erase a newer request;
+- live h2hdb state answering whether a gid is already settled, used to skip
+  redundant network calls without keeping a stale process-local cache;
 - an optional CSV file that lets an operator queue gids/urls for download
   without touching the database directly, re-absorbed periodically so a
   long-running session can pick up new requests without restarting.
@@ -22,26 +19,30 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from random import random
+from time import time_ns
 from typing import Protocol
+from uuid import uuid4
 
-from h2hdb import H2HDB, H2HDBConfig
+from h2hdb import H2HDB, DownloadRequest, H2HDBConfig
 
 __all__: list[str] = []
 
+CSV_HEADER = ["gid", "url"]
+
 
 @dataclass(frozen=True, slots=True)
-class TodownloadEntry:
-    """One row of the durable download queue: a gid, optionally with its url."""
+class ManualDownloadRequest:
+    """One parsed CSV request, before h2hdb assigns its durable token."""
 
     gid: int
     url: str
 
 
-class _TodownloadGidsReader(Protocol):
-    def get_todownload_gids(self) -> list[tuple[int, str]]: ...
+class _DownloadRequestsReader(Protocol):
+    def get_download_requests(self) -> list[DownloadRequest]: ...
 
 
-def parse_todownload_csv_rows(rows: list[list[str]]) -> list[TodownloadEntry]:
+def parse_todownload_csv_rows(rows: list[list[str]]) -> list[ManualDownloadRequest]:
     """Parse data rows (header already excluded) into queue entries.
 
     A blank gid column means "only the URL is known yet"; it is recorded as
@@ -50,21 +51,8 @@ def parse_todownload_csv_rows(rows: list[list[str]]) -> list[TodownloadEntry]:
     entries = []
     for row in rows:
         gid = 0 if row[0] == "" else int(row[0])
-        entries.append(TodownloadEntry(gid, row[1]))
+        entries.append(ManualDownloadRequest(gid, row[1]))
     return entries
-
-
-def compute_pass_gids(
-    downloaded_gids: list[int],
-    pending_download_gids: list[int],
-    todownload_gids: list[TodownloadEntry],
-) -> list[int]:
-    """Gids considered settled: downloaded, and neither queued nor flagged for redownload."""
-    return list(
-        set(downloaded_gids)
-        - set(pending_download_gids)
-        - {entry.gid for entry in todownload_gids}
-    )
 
 
 def random_wocount_max() -> int:
@@ -73,103 +61,179 @@ def random_wocount_max() -> int:
 
 
 def should_attempt_download(
-    gid: int, pass_gids: set[int], wocount: int, wocount_max: int
+    *,
+    is_downloaded: bool,
+    is_pending: bool,
+    is_requested: bool,
+    wocount: int,
+    wocount_max: int,
 ) -> bool:
-    """Whether a real network download should be attempted for ``gid``.
+    """Whether a real network download should be attempted.
 
-    Settled gids are skipped to avoid redundant downloads, except every
-    ``wocount_max``-th skip in a row, which forces a re-verify download.
+    A gid is settled only when it is already downloaded and has neither a
+    redownload flag nor a durable request. Settled gids are normally skipped,
+    except every ``wocount_max``-th skip in a row, which forces a re-verify.
     """
-    return (gid not in pass_gids) or (wocount > wocount_max)
+    is_settled = is_downloaded and not is_pending and not is_requested
+    return not is_settled or wocount > wocount_max
 
 
-def read_todownload_csv(path: Path) -> list[TodownloadEntry]:
+def read_todownload_csv(path: Path) -> list[ManualDownloadRequest]:
     with path.open(newline="", encoding="utf-8") as file:
         rows = list(csv.reader(file))
-    return parse_todownload_csv_rows(rows[1:])
-
-
-def write_empty_todownload_csv(path: Path) -> None:
-    with path.open(mode="w", newline="", encoding="utf-8") as file:
-        csv.writer(file).writerow(["gid", "url"])
+    if rows and rows[0] == CSV_HEADER:
+        rows = rows[1:]
+    return parse_todownload_csv_rows(rows)
 
 
 def ensure_todownload_csv(path: Path) -> None:
-    if not path.exists():
-        write_empty_todownload_csv(path)
+    try:
+        with path.open(mode="x", newline="", encoding="utf-8") as file:
+            csv.writer(file).writerow(CSV_HEADER)
+    except FileExistsError:
+        pass
+
+
+def _claim_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.claim-{time_ns():020d}-{uuid4().hex}")
+
+
+def _existing_claim_paths(path: Path) -> list[Path]:
+    prefix = f".{path.name}.claim-"
+    claims: list[tuple[int, str, Path]] = []
+    for candidate in path.parent.iterdir():
+        if not candidate.name.startswith(prefix):
+            continue
+        try:
+            if candidate.is_file():
+                claims.append((candidate.stat().st_mtime_ns, candidate.name, candidate))
+        except FileNotFoundError:
+            continue
+    return [candidate for _, _, candidate in sorted(claims)]
+
+
+def _claim_current_csv(path: Path) -> Path | None:
+    """Atomically detach current work while immediately restoring the inbox path."""
+
+    ensure_todownload_csv(path)
+    if not read_todownload_csv(path):
+        return None
+
+    claim_path = _claim_path(path)
+    try:
+        os.replace(path, claim_path)
+    except FileNotFoundError:
+        # Another process may have claimed the inbox after our read. Its claim
+        # is independently recoverable; recreate the inbox if necessary.
+        ensure_todownload_csv(path)
+        return None
+    ensure_todownload_csv(path)
+    return claim_path
 
 
 class GalleryQueue:
-    """Owns the durable queue/dedup state backing a single ``Downloader``."""
+    """Mediates h2hdb's durable requests and live deduplication state."""
 
     def __init__(
         self, config: H2HDBConfig, csv_path: str | os.PathLike[str] | None
     ) -> None:
-        """``csv_path=None`` disables the manual CSV queue entirely; the
-        durable in-flight log and dedup cache work the same either way."""
+        """``csv_path=None`` disables the manual CSV queue."""
         self.config = config
         self.csv_path = Path(csv_path) if csv_path is not None else None
         self.wocount = 0
         self.wocount_max = random_wocount_max()
-        self.refresh()
-
-    def refresh(self) -> None:
-        """Re-absorb the CSV queue into the database, then reload cached state."""
         self._sync_csv_into_db()
-        with H2HDB(config=self.config) as connector:
-            downloaded_gids = connector.gallery_gids.get_gids()
-            self.pending_download_gids = connector.get_pending_download_gids()
-            todownload_gids = self._fetch_todownload_gids(connector)
-        self.pass_gids = set(
-            compute_pass_gids(
-                downloaded_gids, self.pending_download_gids, todownload_gids
-            )
-        )
 
     def _sync_csv_into_db(self) -> None:
         if self.csv_path is None:
             return
         ensure_todownload_csv(self.csv_path)
-        entries = read_todownload_csv(self.csv_path)
+        for claim_path in _existing_claim_paths(self.csv_path):
+            if not self._replay_csv_claim(claim_path):
+                return
+
+        current_claim_path = _claim_current_csv(self.csv_path)
+        if current_claim_path is not None:
+            self._replay_csv_claim(current_claim_path)
+
+    def _replay_csv_claim(self, claim_path: Path) -> bool:
+        """Replay one crash-recoverable claim and remove it only when stable."""
+
+        try:
+            before = claim_path.stat()
+        except FileNotFoundError:
+            return True
+
+        entries = read_todownload_csv(claim_path)
         if entries:
             with H2HDB(config=self.config) as connector:
                 for entry in entries:
-                    connector.insert_todownload_gid(entry.gid, entry.url)
-        write_empty_todownload_csv(self.csv_path)
+                    connector.request_download(entry.gid, entry.url)
+
+        try:
+            after = claim_path.stat()
+        except FileNotFoundError:
+            return True
+        if (before.st_size, before.st_mtime_ns) != (
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            # A writer that had the pre-rotation file open appended to the
+            # claimed inode. Keep it so the next sync replays those new rows.
+            return False
+
+        claim_path.unlink(missing_ok=True)
+        return True
 
     @staticmethod
-    def _fetch_todownload_gids(
-        connector: _TodownloadGidsReader,
-    ) -> list[TodownloadEntry]:
-        return [
-            TodownloadEntry(gid, url) for gid, url in connector.get_todownload_gids()
-        ]
+    def _fetch_download_requests(
+        connector: _DownloadRequestsReader,
+    ) -> list[DownloadRequest]:
+        return connector.get_download_requests()
 
-    def mark_inflight(self, gid: int, url: str) -> None:
+    def request_download(self, gid: int, url: str = "") -> DownloadRequest:
         with H2HDB(config=self.config) as connector:
-            connector.insert_todownload_gid(gid, url)
+            return connector.request_download(gid, url)
 
-    def clear_inflight(self, gid: int) -> None:
+    def complete_download_request(self, request: DownloadRequest) -> None:
         with H2HDB(config=self.config) as connector:
-            connector.remove_todownload_gid(gid)
+            connector.complete_download_request(request)
 
-    def todownload_gids(self) -> list[TodownloadEntry]:
+    def is_current(self, request: DownloadRequest) -> bool:
         with H2HDB(config=self.config) as connector:
-            return self._fetch_todownload_gids(connector)
-
-    def should_attempt(self, gid: int) -> bool:
-        return should_attempt_download(
-            gid, self.pass_gids, self.wocount, self.wocount_max
+            current = connector.get_download_request(request.gid)
+        return (
+            current is not None
+            and current.gid == request.gid
+            and current.token == request.token
         )
 
-    def note_attempt_outcome(self, downloaded: bool) -> None:
-        if downloaded:
-            self.wocount = 0
-            self.wocount_max = random_wocount_max()
-        else:
-            self.wocount += 1
+    def download_requests(self) -> list[DownloadRequest]:
+        """Absorb manual CSV work, then return a live database snapshot."""
+        self._sync_csv_into_db()
+        with H2HDB(config=self.config) as connector:
+            return self._fetch_download_requests(connector)
 
-    def mark_done(self, gid: int) -> None:
-        self.pass_gids.add(gid)
-        if gid in self.pending_download_gids:
-            self.pending_download_gids.remove(gid)
+    def should_attempt(self, gid: int) -> bool:
+        with H2HDB(config=self.config) as connector:
+            is_downloaded = connector.gallery_gids.check_gid_by_gid(gid)
+            is_pending = gid in connector.get_pending_download_gids()
+            is_requested = connector.get_download_request(gid) is not None
+        return should_attempt_download(
+            is_downloaded=is_downloaded,
+            is_pending=is_pending,
+            is_requested=is_requested,
+            wocount=self.wocount,
+            wocount_max=self.wocount_max,
+        )
+
+    def pending_redownload_gids(self) -> list[int]:
+        with H2HDB(config=self.config) as connector:
+            return connector.get_pending_download_gids()
+
+    def note_skip(self) -> None:
+        self.wocount += 1
+
+    def note_download_success(self) -> None:
+        self.wocount = 0
+        self.wocount_max = random_wocount_max()

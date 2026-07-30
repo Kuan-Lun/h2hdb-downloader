@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 from h2h_galleryinfo_parser import GalleryURLParser
-from h2hdb import H2HDBConfig
+from h2hdb import DownloadRequest, H2HDBConfig
 from hbrowser import ExHDriver
 
 from h2hdb_downloader._queue import GalleryQueue
@@ -18,10 +18,13 @@ class FakeDBStore:
 
     gids: set[int] = field(default_factory=set)
     pending_download_gids: list[int] = field(default_factory=list)
-    todownload: dict[int, str] = field(default_factory=dict)
+    download_requests: dict[int, DownloadRequest] = field(default_factory=dict)
+    next_request_token: int = 1
     removed_gids: set[int] = field(default_factory=set)
     todelete_gids: set[int] = field(default_factory=set)
     redownload_time_updates: list[int] = field(default_factory=list)
+    request_download_error: Exception | None = None
+    request_download_observer: Callable[[], None] | None = None
 
 
 class FakeGalleryGIDs:
@@ -56,23 +59,50 @@ class FakeConnector:
         return None
 
     def get_pending_download_gids(self) -> list[int]:
-        return list(self.store.pending_download_gids)
+        return [
+            gid
+            for gid in self.store.pending_download_gids
+            if gid not in self.store.removed_gids
+            and gid not in self.store.todelete_gids
+        ]
 
-    def get_todownload_gids(self) -> list[tuple[int, str]]:
-        return list(self.store.todownload.items())
+    def get_download_requests(self) -> list[DownloadRequest]:
+        return sorted(self.store.download_requests.values(), key=lambda item: item.gid)
 
-    def insert_todownload_gid(self, gid: int, url: str) -> None:
+    def get_download_request(self, gid: int) -> DownloadRequest | None:
+        return self.store.download_requests.get(gid)
+
+    def request_download(self, gid: int, url: str = "") -> DownloadRequest:
+        if self.store.request_download_error is not None:
+            raise self.store.request_download_error
+        if self.store.request_download_observer is not None:
+            self.store.request_download_observer()
         if url:
-            gid = GalleryURLParser(url=url).gid
-        self.store.todownload[gid] = url
+            parsed_gid = GalleryURLParser(url=url).gid
+            if gid not in (0, parsed_gid):
+                raise ValueError
+            gid = parsed_gid
+        if gid <= 0:
+            raise ValueError
+        existing = self.store.download_requests.get(gid)
+        if not url and existing is not None:
+            url = existing.url
+        request = DownloadRequest(gid, url, f"token-{self.store.next_request_token}")
+        self.store.next_request_token += 1
+        self.store.download_requests[gid] = request
+        return request
 
-    def remove_todownload_gid(self, gid: int) -> None:
-        self.store.todownload.pop(gid, None)
+    def complete_download_request(self, request: DownloadRequest) -> None:
+        current = self.store.download_requests.get(request.gid)
+        if current is not None and current.token == request.token:
+            self.store.download_requests.pop(request.gid)
 
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
         self.store.redownload_time_updates.append(gid)
+        if gid in self.store.pending_download_gids:
+            self.store.pending_download_gids.remove(gid)
 
-    def insert_todelete_gid(self, gid: int) -> None:
+    def request_gallery_deletion(self, gid: int) -> None:
         self.store.todelete_gids.add(gid)
 
 
@@ -89,6 +119,7 @@ class FakeDriver:
             True
         )
         self.search_results: dict[str, list[GalleryURLParser]] = {}
+        self.search_observer: Callable[[str, bool], None] | None = None
         self.tag_results: dict[str, list[object]] = {}
 
     async def download(self, gallery: GalleryURLParser) -> bool:
@@ -99,6 +130,8 @@ class FakeDriver:
 
     async def search(self, key: str, isclear: bool) -> list[GalleryURLParser]:
         self.search_calls.append((key, isclear))
+        if self.search_observer is not None:
+            self.search_observer(key, isclear)
         return self.search_results.get(key, [])
 
     async def get(self, url: str) -> None:

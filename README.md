@@ -10,27 +10,34 @@ the browser session and the overall process lifecycle.
 - **Gallery** — a single exhentai/e-hentai gallery, identified by a `gid`
   (numeric id) and represented as `h2h_galleryinfo_parser.GalleryURLParser`
   once its URL is known.
-- **Dedup** — before issuing a real network download, the package checks
-  h2hdb to see if the gid is already settled (downloaded, and not flagged
-  for redownload). Settled gids are skipped — except periodically, at a
-  random interval (1 to 19 attempts), when one is force-redownloaded anyway
-  as an integrity re-check.
-- **Durable queue** — every download attempt is logged to the h2hdb
-  `todownload_gids` table *before* it starts and cleared *after* it
-  finishes, so a process killed mid-download leaves a trace that gets
-  retried on the next run instead of silently disappearing. The same table
-  doubles as a manual work queue: drop a `(gid, url)` row into the CSV file
-  you configure as `csv_path` and it will be picked up the next time the
-  queue is drained.
+- **Dedup** — before issuing a real network download, the package reads live
+  h2hdb state to see if the gid is already settled (downloaded, with no
+  redownload flag or durable request). Settled gids are skipped — except
+  periodically, at a random interval (1 to 19 attempts), when one is
+  force-redownloaded as an integrity re-check.
+- **Durable requests** — immediately before a real download starts, the
+  package creates a tokenized request in h2hdb's `todownload_gids` table.
+  It conditionally completes that exact token only after success. A `False`
+  result, exception, cancellation, or process termination leaves resumable
+  work behind, while a newer request for the same gid cannot be erased by
+  an older attempt finishing late. h2hdb also uses this table to publish a
+  redownload request after all active deletion-candidate folders for a gid
+  have actually disappeared.
+- **Manual queue** — add a `(gid, url)` row to the CSV configured by
+  `csv_path`. It is converted into the same durable request and picked up
+  the next time the queue is drained. Before replay, the inbox is atomically
+  rotated to a same-directory hidden claim file; interrupted claims are
+  replayed automatically on the next run.
 - **Deep download** — download a gallery, then look at its `artist`/`group`
   tags and download sibling galleries that match a set of search conditions
   (e.g. other-language releases of the same work).
 
 ## API
 
-`Downloader` is the sole public export. Every method either acts on a
-target you explicitly pass in, or — for the two queue-reading methods below
-— hands back a plain value with no further bookkeeping required from you.
+`Downloader` is the public service object; `TagCascadePolicy` is the other
+public export. Every method either acts on a target you explicitly pass in
+or, for the two queue-reading methods below, hands back a plain value with
+no further bookkeeping required from you.
 There is no "run the whole thing" method: deciding when to stop, what order
 to process things in, and how to report progress is the calling
 application's job, not the library's.
@@ -47,8 +54,8 @@ Downloader(
 ```
 
 `csv_path` only enables the optional "queue a gid/url by editing a CSV file"
-feature described above — leave it as `None` if you don't need that; the
-durable in-flight log and dedup cache work identically either way.
+feature described above. Leave it as `None` if you don't need that; durable
+database requests and live deduplication still work.
 
 `Downloader` is itself an async context manager that opens and closes the
 browser session for you, so `driver` is expected un-entered:
@@ -74,9 +81,8 @@ thing.
 - `await download_by_gid(gid)` — resolve a bare gid to its gallery via
   search, then download it. If the gid no longer resolves to anything, it's
   recorded as removed in h2hdb; if it resolves to a *different* gid (the
-  gallery was merged/redirected), the original gid is flagged for deletion.
-  Either way, `gid` is fully settled in the pending-redownload queue before
-  this returns — callers never need to do that bookkeeping themselves.
+  gallery was merged/redirected), the original gid is flagged for deletion
+  after the replacement downloads successfully.
 - `await download_by_tag(tag, conditions)` — download every gallery under a
   `hbrowser` `Tag`, once per search condition in `conditions` (or
   unconditionally if `conditions` is empty).
@@ -92,13 +98,13 @@ thing.
   parallel parameters.
 - `await deep_download_by_gid(gid, policy, skip_check=False)` — same
   gid-resolution as `download_by_gid`, but deep.
-- `await drain_queue(policy, skip_check=True)` — process everything
-  currently queued *right now*: anything queued manually via the CSV, plus
-  anything left in-flight by a previous interrupted run. Doesn't loop or
-  wait for more — it's a single, bounded pass over a snapshot.
+- `await drain_queue(policy, skip_check=True)` — absorb the manual CSV and
+  process one live snapshot of durable database requests. A request is
+  removed only after a successful download, confirmed removal, or successful
+  redirect. The method doesn't loop or wait for new work.
 - `pending_redownload_gids()` — a snapshot list of gids h2hdb currently
-  flags as needing a redownload. Read-only; safe to call repeatedly as you
-  work through it.
+  flags as needing a periodic redownload. Every call reads live database
+  state; read-only and safe to call repeatedly as you work through it.
 
 ## Example
 
@@ -141,4 +147,6 @@ asyncio.run(main())
 
 ## License
 
-This project is distributed under the terms of the GNU General Public Licence (GPL). For detailed licence terms, see the `LICENSE` file included in this distribution.
+This project is distributed under the terms of the GNU General Public Licence
+(GPL). For detailed licence terms, see the `LICENSE` file included in this
+distribution.
