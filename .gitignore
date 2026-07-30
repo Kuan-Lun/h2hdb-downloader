@@ -3,8 +3,16 @@ __pycache__
 *.pyc
 *.pyo
 *.egg-info
-!.vscode
-!.github
+
+!/.gitignore
+!/.github/
+!.github/**
+!/.vscode/
+!.vscode/**
+!.claude/
+!.claude/**
+!/.Codex/
+!/.Codex/**
 
 uv.lock
 
