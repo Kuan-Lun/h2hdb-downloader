@@ -1,11 +1,12 @@
 import asyncio
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import DownloadRequest
+from hbrowser import Tag
 from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
 from h2hdb_downloader import DownloadTurnLostError
@@ -657,6 +658,7 @@ async def test_cancelled_deep_root_keeps_request_and_hands_off(
             await asyncio.Event().wait()
         finally:
             download_cancelled.set()
+        raise AssertionError("unreachable")
 
     fake_driver.download_result = block_download
     downloader = downloader_factory()
@@ -729,6 +731,7 @@ async def test_lost_turn_cancels_deep_root_but_still_attempts_handoff(
             await asyncio.Event().wait()
         finally:
             download_cancelled.set()
+        raise AssertionError("unreachable")
 
     fake_driver.download_result = block_download
     downloader = downloader_factory(
@@ -848,7 +851,10 @@ async def test_direct_download_apis_do_not_claim_an_ingest_turn(
     await downloader.download_by_gallery(gallery(1))
     await downloader.download_by_gid(2)
     await downloader.download_by_tag(
-        SimpleNamespace(href="https://exhentai.org/tag/artist:someone"),
+        cast(
+            Tag,
+            SimpleNamespace(href="https://exhentai.org/tag/artist:someone"),
+        ),
         (),
     )
 

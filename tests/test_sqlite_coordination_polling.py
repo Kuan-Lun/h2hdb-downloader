@@ -4,6 +4,7 @@ from typing import cast
 
 import pytest
 from h2hdb import H2HDB, DatabaseConfig, H2HDBConfig
+from h2hdb.sqlite_connector import SQLiteConnector
 from hbrowser import ExHDriver
 
 from h2hdb_downloader.downloader import Downloader, _is_retryable_sqlite_lock_error
@@ -64,16 +65,13 @@ def lock_database_exclusively(config: H2HDBConfig) -> sqlite3.Connection:
 def force_new_sqlite_connections_not_to_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_connect = sqlite3.connect
+    original_connect = SQLiteConnector.connect
 
-    def connect_without_wait(
-        *args: object,
-        **kwargs: object,
-    ) -> sqlite3.Connection:
-        kwargs["timeout"] = 0
-        return real_connect(*args, **kwargs)
+    def connect_without_wait(connector: SQLiteConnector) -> None:
+        original_connect(connector)
+        connector.connection.execute("PRAGMA busy_timeout = 0")
 
-    monkeypatch.setattr(sqlite3, "connect", connect_without_wait)
+    monkeypatch.setattr(SQLiteConnector, "connect", connect_without_wait)
 
 
 @pytest.mark.parametrize("primary_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED])
@@ -183,7 +181,8 @@ async def test_non_lock_sqlite_operational_error_is_not_retried(
             "claim_download_turn",
             raise_non_lock_error,
         )
-        operation = downloader._claim_download_turn()
+        with pytest.raises(sqlite3.OperationalError) as raised:
+            await downloader._claim_download_turn()
     else:
         turn = downloader._queue.claim_download_turn(lease_seconds=60)
         assert turn is not None
@@ -192,10 +191,8 @@ async def test_non_lock_sqlite_operational_error_is_not_retried(
             "completed_gallery_ingest_generation",
             raise_non_lock_error,
         )
-        operation = downloader._wait_for_gallery_ingest(turn)
-
-    with pytest.raises(sqlite3.OperationalError) as raised:
-        await operation
+        with pytest.raises(sqlite3.OperationalError) as raised:
+            await downloader._wait_for_gallery_ingest(turn)
 
     assert raised.value is error
     assert sleep_calls == []
