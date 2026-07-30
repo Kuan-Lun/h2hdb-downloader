@@ -8,6 +8,7 @@ from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import DownloadRequest
 from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
+from h2hdb_downloader import DownloadTurnLostError
 from h2hdb_downloader.downloader import TagCascadePolicy
 
 if TYPE_CHECKING:
@@ -22,6 +23,14 @@ def gallery(gid: int) -> GalleryURLParser:
 
 def gids_of(galleries: list[GalleryURLParser]) -> list[int]:
     return [gallery.gid for gallery in galleries]
+
+
+async def wait_until(condition: Callable[[], bool]) -> None:
+    for _ in range(100):
+        if condition():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition was not reached")
 
 
 async def test_download_requests_work_before_network_and_completes_on_success(
@@ -373,6 +382,9 @@ async def test_drain_queue_url_entry_falls_back_to_gid_search_on_failure(
 
     assert 1 in fake_store.removed_gids
     assert fake_store.download_requests == {}
+    assert len(fake_store.claim_download_turn_calls) == 1
+    assert len(fake_store.finished_download_turns) == 1
+    assert fake_store.gallery_ingest_requests == []
 
 
 async def test_drain_queue_url_entry_skips_fallback_when_direct_download_succeeds(
@@ -486,3 +498,360 @@ async def test_drain_queue_redirect_failure_keeps_original_request(
     assert result == {1: False}
     assert 999 not in fake_store.todelete_gids
     assert fake_store.download_requests == {999: request}
+
+
+def test_turn_timing_configuration_is_validated(
+    downloader_factory: Callable[..., Downloader],
+) -> None:
+    with pytest.raises(ValueError, match="turn_poll_seconds"):
+        downloader_factory(turn_poll_seconds=0)
+    with pytest.raises(ValueError, match="turn_poll_seconds"):
+        downloader_factory(turn_poll_seconds=float("nan"))
+    with pytest.raises(ValueError, match="turn_lease_seconds"):
+        downloader_factory(turn_lease_seconds=0)
+    with pytest.raises(ValueError, match="turn_lease_seconds"):
+        downloader_factory(turn_lease_seconds=300.5)
+    with pytest.raises(ValueError, match="turn_heartbeat_seconds"):
+        downloader_factory(turn_heartbeat_seconds=0)
+    with pytest.raises(ValueError, match="shorter"):
+        downloader_factory(
+            turn_lease_seconds=60,
+            turn_heartbeat_seconds=60,
+        )
+
+
+async def test_deep_root_waits_for_its_ingest_generation(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    fake_store.auto_complete_gallery_ingest = False
+    fake_driver.search_results["gid:1"] = [gallery(1)]
+    downloader = downloader_factory()
+
+    task = asyncio.create_task(
+        downloader.deep_download_by_gid(
+            1,
+            TagCascadePolicy(filters=(), conditions=()),
+        )
+    )
+    await wait_until(lambda: fake_store.handed_off_turn is not None)
+
+    assert not task.done()
+    assert fake_store.download_requests == {}
+    turn = fake_store.handed_off_turn
+    assert turn is not None
+    assert fake_store.completed_ingest_generation < turn.generation
+
+    fake_store.complete_gallery_ingest()
+
+    assert await task == {1: True}
+    assert fake_store.completed_ingest_generation == turn.generation
+
+
+async def test_deep_root_does_not_start_network_work_before_claiming_ready_turn(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    fake_store.download_turn_available = False
+    downloader = downloader_factory()
+    task = asyncio.create_task(
+        downloader.deep_download_by_gallery(
+            gallery(1),
+            TagCascadePolicy(filters=(), conditions=()),
+        )
+    )
+
+    await wait_until(lambda: len(fake_store.claim_download_turn_calls) >= 1)
+    assert fake_driver.download_calls == []
+    assert fake_store.download_requests == {}
+
+    fake_store.download_turn_available = True
+
+    assert await task == {1: True}
+    assert len(fake_store.claim_download_turn_calls) >= 2
+
+
+async def test_deep_root_request_survives_until_related_cascade_finishes(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    seed = gallery(1)
+    sibling = gallery(2)
+    tag = SimpleNamespace(href="https://exhentai.org/tag/artist:someone")
+    fake_driver.tag_results["artist"] = [tag]
+    fake_driver.search_results[""] = [sibling]
+    sibling_started = asyncio.Event()
+    release_sibling = asyncio.Event()
+
+    async def block_sibling(target: GalleryURLParser) -> bool:
+        if target.gid == sibling.gid:
+            sibling_started.set()
+            await release_sibling.wait()
+        return True
+
+    fake_driver.download_result = block_sibling
+    downloader = downloader_factory()
+    task = asyncio.create_task(
+        downloader.deep_download_by_gallery(
+            seed,
+            TagCascadePolicy(filters=("artist",), conditions=()),
+        )
+    )
+
+    await sibling_started.wait()
+    assert seed.gid in fake_store.download_requests
+
+    release_sibling.set()
+
+    assert await task == {1: True, 2: True}
+    assert seed.gid not in fake_store.download_requests
+    assert len(fake_store.claim_download_turn_calls) == 1
+    assert len(fake_store.finished_download_turns) == 1
+    assert fake_store.gallery_ingest_requests == []
+
+
+async def test_deep_cascade_exception_keeps_root_request_and_hands_off(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    seed = gallery(1)
+    sibling = gallery(2)
+    tag = SimpleNamespace(href="https://exhentai.org/tag/artist:someone")
+    fake_driver.tag_results["artist"] = [tag]
+    fake_driver.search_results[""] = [sibling]
+
+    async def fail_sibling(target: GalleryURLParser) -> bool:
+        if target.gid == sibling.gid:
+            raise InsufficientFundsException("broke")
+        return True
+
+    fake_driver.download_result = fail_sibling
+    downloader = downloader_factory(retry2download=0)
+
+    with pytest.raises(InsufficientFundsException):
+        await downloader.deep_download_by_gallery(
+            seed,
+            TagCascadePolicy(filters=("artist",), conditions=()),
+        )
+
+    assert seed.gid in fake_store.download_requests
+    assert len(fake_store.gallery_ingest_requests) == 1
+    assert fake_store.finished_download_turns == []
+
+
+async def test_cancelled_deep_root_keeps_request_and_hands_off(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    download_started = asyncio.Event()
+    download_cancelled = asyncio.Event()
+
+    async def block_download(_gallery: GalleryURLParser) -> bool:
+        download_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            download_cancelled.set()
+
+    fake_driver.download_result = block_download
+    downloader = downloader_factory()
+    task = asyncio.create_task(
+        downloader.deep_download_by_gallery(
+            gallery(1),
+            TagCascadePolicy(filters=(), conditions=()),
+        )
+    )
+    await download_started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert download_cancelled.is_set()
+    assert 1 in fake_store.download_requests
+    assert len(fake_store.gallery_ingest_requests) == 1
+    assert fake_store.finished_download_turns == []
+
+
+async def test_long_deep_root_renews_its_turn_lease(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    renewed = asyncio.Event()
+    fake_store.renew_download_turn_observer = renewed.set
+
+    async def wait_for_renewal(_gallery: GalleryURLParser) -> bool:
+        await renewed.wait()
+        return True
+
+    fake_driver.download_result = wait_for_renewal
+    downloader = downloader_factory(
+        turn_lease_seconds=1,
+        turn_heartbeat_seconds=0.001,
+    )
+
+    result = await downloader.deep_download_by_gallery(
+        gallery(1),
+        TagCascadePolicy(filters=(), conditions=()),
+    )
+
+    assert result == {1: True}
+    assert len(fake_store.renew_download_turn_calls) >= 1
+    assert all(
+        lease_seconds == 1
+        for _turn, lease_seconds in fake_store.renew_download_turn_calls
+    )
+
+
+async def test_lost_turn_cancels_deep_root_but_still_attempts_handoff(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    download_started = asyncio.Event()
+    download_cancelled = asyncio.Event()
+    fake_store.renew_download_turn_result = False
+
+    def expire_turn() -> None:
+        fake_store.active_download_turn = None
+
+    fake_store.renew_download_turn_observer = expire_turn
+
+    async def block_download(_gallery: GalleryURLParser) -> bool:
+        download_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            download_cancelled.set()
+
+    fake_driver.download_result = block_download
+    downloader = downloader_factory(
+        turn_lease_seconds=1,
+        turn_heartbeat_seconds=0.001,
+    )
+
+    with pytest.raises(DownloadTurnLostError):
+        await downloader.deep_download_by_gallery(
+            gallery(1),
+            TagCascadePolicy(filters=(), conditions=()),
+        )
+
+    assert download_started.is_set()
+    assert download_cancelled.is_set()
+    assert 1 in fake_store.download_requests
+    assert len(fake_store.gallery_ingest_requests) == 1
+    assert fake_store.finished_download_turns == []
+
+
+async def test_late_stale_finish_cannot_delete_root_after_expired_turn_recovery(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+) -> None:
+    def recover_expired_turn() -> None:
+        turn = fake_store.active_download_turn
+        assert turn is not None
+        fake_store.completed_ingest_generation = turn.generation
+        fake_store.active_download_turn = None
+        fake_store.download_turn_available = True
+
+    fake_store.finish_download_turn_observer = recover_expired_turn
+    downloader = downloader_factory()
+
+    with pytest.raises(DownloadTurnLostError):
+        await downloader.deep_download_by_gallery(
+            gallery(1),
+            TagCascadePolicy(filters=(), conditions=()),
+        )
+
+    assert 1 in fake_store.download_requests
+    assert len(fake_store.finished_download_turns) == 1
+    assert fake_store.gallery_ingest_requests == []
+
+
+async def test_atomic_finish_does_not_delete_newer_root_request_token(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    newer_request = DownloadRequest(1, gallery(1).url, "newer-token")
+
+    async def replace_root_request(target: GalleryURLParser) -> bool:
+        assert target.gid == 1
+        old_request = fake_store.download_requests[1]
+        assert old_request.token != newer_request.token
+        fake_store.download_requests[1] = newer_request
+        return True
+
+    fake_driver.download_result = replace_root_request
+    downloader = downloader_factory()
+
+    assert await downloader.deep_download_by_gallery(
+        gallery(1),
+        TagCascadePolicy(filters=(), conditions=()),
+    ) == {1: True}
+
+    assert fake_store.download_requests == {1: newer_request}
+    assert len(fake_store.finished_download_turns) == 1
+    assert fake_store.gallery_ingest_requests == []
+    assert fake_store.completed_ingest_generation == 1
+    _turn, finished_request = fake_store.finished_download_turns[0]
+    assert finished_request.token != newer_request.token
+
+
+async def test_drain_queue_hands_off_and_waits_between_each_root_request(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    fake_store.auto_complete_gallery_ingest = False
+    fake_store.download_requests = {
+        gid: DownloadRequest(gid, gallery(gid).url, f"request-{gid}") for gid in (1, 2)
+    }
+    downloader = downloader_factory()
+    task = asyncio.create_task(
+        downloader.drain_queue(TagCascadePolicy(filters=(), conditions=()))
+    )
+
+    await wait_until(lambda: len(fake_store.finished_download_turns) == 1)
+    assert gids_of(fake_driver.download_calls) == [1]
+    assert not task.done()
+
+    fake_store.complete_gallery_ingest()
+    await wait_until(lambda: len(fake_store.finished_download_turns) == 2)
+    assert gids_of(fake_driver.download_calls) == [1, 2]
+    assert not task.done()
+
+    fake_store.complete_gallery_ingest()
+
+    assert await task == {1: True, 2: True}
+    assert [
+        turn.generation for turn, _request in fake_store.finished_download_turns
+    ] == [1, 2]
+    assert fake_store.gallery_ingest_requests == []
+    assert len(fake_store.claim_download_turn_calls) == 2
+
+
+async def test_direct_download_apis_do_not_claim_an_ingest_turn(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    fake_driver.search_results["gid:2"] = [gallery(2)]
+    downloader = downloader_factory()
+
+    await downloader.download_by_gallery(gallery(1))
+    await downloader.download_by_gid(2)
+    await downloader.download_by_tag(
+        SimpleNamespace(href="https://exhentai.org/tag/artist:someone"),
+        (),
+    )
+
+    assert fake_store.claim_download_turn_calls == []
+    assert fake_store.gallery_ingest_requests == []
+    assert fake_store.finished_download_turns == []

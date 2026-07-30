@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -11,6 +12,17 @@ from hbrowser import ExHDriver
 
 from h2hdb_downloader._queue import GalleryQueue
 from h2hdb_downloader.downloader import Downloader
+
+
+@dataclass(frozen=True, slots=True)
+class FakeDownloadTurn:
+    generation: int
+    owner_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class FakeGalleryIngestState:
+    completed_generation: int
 
 
 @dataclass
@@ -29,9 +41,39 @@ class FakeDBStore:
     database_gate_depth: int = 0
     database_gate_timeouts: list[int] = field(default_factory=list)
     connector_exit_gate_depths: list[int] = field(default_factory=list)
+    download_turn_available: bool = True
+    next_download_turn_generation: int = 1
+    active_download_turn: FakeDownloadTurn | None = None
+    handed_off_turn: FakeDownloadTurn | None = None
+    completed_ingest_generation: int = 0
+    auto_complete_gallery_ingest: bool = True
+    claim_download_turn_calls: list[int] = field(default_factory=list)
+    renew_download_turn_calls: list[tuple[FakeDownloadTurn, int]] = field(
+        default_factory=list
+    )
+    renew_download_turn_result: bool = True
+    renew_download_turn_observer: Callable[[], None] | None = None
+    gallery_ingest_requests: list[FakeDownloadTurn] = field(default_factory=list)
+    finished_download_turns: list[tuple[FakeDownloadTurn, DownloadRequest]] = field(
+        default_factory=list
+    )
+    finish_download_turn_observer: Callable[[], None] | None = None
+    accepted_gallery_ingest_turns: set[FakeDownloadTurn] = field(default_factory=set)
+    gallery_ingest_state_reads: int = 0
 
     def assert_database_gate(self) -> None:
         assert self.database_gate_depth > 0
+
+    def complete_gallery_ingest(self) -> None:
+        turn = self.handed_off_turn
+        assert turn is not None
+        self.completed_ingest_generation = max(
+            self.completed_ingest_generation,
+            turn.generation,
+        )
+        self.active_download_turn = None
+        self.handed_off_turn = None
+        self.download_turn_available = True
 
 
 class FakeGalleryGIDs:
@@ -132,6 +174,75 @@ class FakeConnector:
         self.store.assert_database_gate()
         self.store.todelete_gids.add(gid)
 
+    def claim_download_turn(self, *, lease_seconds: int) -> FakeDownloadTurn | None:
+        self.store.assert_database_gate()
+        self.store.claim_download_turn_calls.append(lease_seconds)
+        if not self.store.download_turn_available:
+            return None
+
+        generation = self.store.next_download_turn_generation
+        turn = FakeDownloadTurn(generation, f"turn-token-{generation}")
+        self.store.next_download_turn_generation += 1
+        self.store.download_turn_available = False
+        self.store.active_download_turn = turn
+        self.store.handed_off_turn = None
+        return turn
+
+    def renew_download_turn(
+        self, turn: FakeDownloadTurn, *, lease_seconds: int
+    ) -> bool:
+        self.store.assert_database_gate()
+        self.store.renew_download_turn_calls.append((turn, lease_seconds))
+        if self.store.renew_download_turn_observer is not None:
+            self.store.renew_download_turn_observer()
+        return (
+            self.store.renew_download_turn_result
+            and self.store.active_download_turn == turn
+            and self.store.handed_off_turn is None
+        )
+
+    def request_gallery_ingest(self, turn: FakeDownloadTurn) -> bool:
+        self.store.assert_database_gate()
+        self.store.gallery_ingest_requests.append(turn)
+        if turn in self.store.accepted_gallery_ingest_turns:
+            return True
+        if self.store.active_download_turn != turn:
+            return False
+
+        self.store.accepted_gallery_ingest_turns.add(turn)
+        self.store.handed_off_turn = turn
+        if self.store.auto_complete_gallery_ingest:
+            self.store.complete_gallery_ingest()
+        return True
+
+    def finish_download_turn(
+        self,
+        turn: FakeDownloadTurn,
+        request: DownloadRequest,
+    ) -> bool:
+        self.store.assert_database_gate()
+        self.store.finished_download_turns.append((turn, request))
+        if self.store.finish_download_turn_observer is not None:
+            self.store.finish_download_turn_observer()
+        if turn in self.store.accepted_gallery_ingest_turns:
+            return True
+        if self.store.active_download_turn != turn:
+            return False
+
+        current = self.store.download_requests.get(request.gid)
+        if current is not None and current.token == request.token:
+            self.store.download_requests.pop(request.gid)
+        self.store.accepted_gallery_ingest_turns.add(turn)
+        self.store.handed_off_turn = turn
+        if self.store.auto_complete_gallery_ingest:
+            self.store.complete_gallery_ingest()
+        return True
+
+    def get_gallery_ingest_state(self) -> FakeGalleryIngestState:
+        self.store.assert_database_gate()
+        self.store.gallery_ingest_state_reads += 1
+        return FakeGalleryIngestState(self.store.completed_ingest_generation)
+
 
 class FakeDriver:
     """Stand-in for ``hbrowser.ExHDriver``: scripted responses, recorded calls."""
@@ -198,8 +309,10 @@ def patch_h2hdb(
 
 @pytest.fixture(autouse=True)
 def no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_sleep = asyncio.sleep
+
     async def instant_sleep(_seconds: float) -> None:
-        return None
+        await real_sleep(0)
 
     monkeypatch.setattr("h2hdb_downloader.downloader.asyncio.sleep", instant_sleep)
 
@@ -231,13 +344,23 @@ def downloader_factory(
         "h2hdb_downloader.downloader.load_config", lambda config_path: object()
     )
 
-    def make(*, wait4client: int = 0, retry2download: int = 0) -> Downloader:
+    def make(
+        *,
+        wait4client: int = 0,
+        retry2download: int = 0,
+        turn_poll_seconds: float = 5,
+        turn_lease_seconds: int = 300,
+        turn_heartbeat_seconds: float = 60,
+    ) -> Downloader:
         return Downloader(
             cast(ExHDriver, fake_driver),
             config_path="unused.json",
             csv_path=tmp_path / "todownload_gids.csv",
             wait4client=wait4client,
             retry2download=retry2download,
+            turn_poll_seconds=turn_poll_seconds,
+            turn_lease_seconds=turn_lease_seconds,
+            turn_heartbeat_seconds=turn_heartbeat_seconds,
         )
 
     return make

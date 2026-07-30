@@ -2,11 +2,12 @@
 
 Not part of the public API. Everything here exists to support ``Downloader``.
 
-The underlying database tracks three independent things that this module
+The underlying database tracks four independent things that this module
 ties together:
 
 - durable download requests (``todownload_gids``), each identified by an
   immutable token so completing an old attempt cannot erase a newer request;
+- the generation-fenced download/ingest turn, including its recoverable lease;
 - live h2hdb state answering whether a gid is already settled, used to skip
   redundant network calls without keeping a stale process-local cache;
 - an optional CSV file that lets an operator queue gids/urls for download
@@ -22,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from random import random
 from time import time_ns
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import uuid4
 
 from h2hdb import H2HDB, DownloadRequest, H2HDBConfig
@@ -42,6 +43,37 @@ class ManualDownloadRequest:
 
 class _DownloadRequestsReader(Protocol):
     def get_download_requests(self) -> list[DownloadRequest]: ...
+
+
+class DownloadTurn(Protocol):
+    """The stable portion of h2hdb's download-turn value used here."""
+
+    @property
+    def generation(self) -> int: ...
+
+    @property
+    def owner_token(self) -> str: ...
+
+
+class _GalleryIngestState(Protocol):
+    @property
+    def completed_generation(self) -> int: ...
+
+
+class _DownloadTurnCoordinator(Protocol):
+    def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None: ...
+
+    def renew_download_turn(
+        self, turn: DownloadTurn, *, lease_seconds: int
+    ) -> bool: ...
+
+    def request_gallery_ingest(self, turn: DownloadTurn) -> bool: ...
+
+    def finish_download_turn(
+        self, turn: DownloadTurn, request: DownloadRequest
+    ) -> bool: ...
+
+    def get_gallery_ingest_state(self) -> _GalleryIngestState: ...
 
 
 def parse_todownload_csv_rows(rows: list[list[str]]) -> list[ManualDownloadRequest]:
@@ -209,6 +241,36 @@ class GalleryQueue:
     def complete_download_request(self, request: DownloadRequest) -> None:
         with self._database_operation() as connector:
             connector.complete_download_request(request)
+
+    def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            return coordinator.claim_download_turn(lease_seconds=lease_seconds)
+
+    def renew_download_turn(self, turn: DownloadTurn, *, lease_seconds: int) -> bool:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            return coordinator.renew_download_turn(
+                turn,
+                lease_seconds=lease_seconds,
+            )
+
+    def request_gallery_ingest(self, turn: DownloadTurn) -> bool:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            return coordinator.request_gallery_ingest(turn)
+
+    def finish_download_turn(
+        self, turn: DownloadTurn, request: DownloadRequest
+    ) -> bool:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            return coordinator.finish_download_turn(turn, request)
+
+    def completed_gallery_ingest_generation(self) -> int:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            return coordinator.get_gallery_ingest_state().completed_generation
 
     def is_current(self, request: DownloadRequest) -> bool:
         with self._database_operation() as connector:

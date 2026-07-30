@@ -235,6 +235,68 @@ def test_database_operations_use_the_five_minute_maintenance_gate(
     assert fake_store.database_gate_depth == 0
 
 
+def test_download_turn_operations_are_short_gated_database_calls(
+    queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
+) -> None:
+    queue = queue_factory()
+
+    turn = queue.claim_download_turn(lease_seconds=300)
+
+    assert turn is not None
+    assert queue.renew_download_turn(turn, lease_seconds=300)
+    assert queue.completed_gallery_ingest_generation() == 0
+    assert queue.request_gallery_ingest(turn)
+    assert queue.completed_gallery_ingest_generation() == turn.generation
+    assert fake_store.database_gate_timeouts == [300] * 5
+    assert fake_store.connector_exit_gate_depths == [1] * 5
+    assert fake_store.database_gate_depth == 0
+
+
+def test_download_turn_handoff_is_idempotent(
+    queue_factory: Callable[..., GalleryQueue],
+    fake_store: FakeDBStore,
+) -> None:
+    queue = queue_factory()
+    turn = queue.claim_download_turn(lease_seconds=300)
+    assert turn is not None
+
+    assert queue.request_gallery_ingest(turn)
+    assert queue.request_gallery_ingest(turn)
+
+
+def test_finish_download_turn_atomically_hands_off_and_completes_exact_request(
+    queue_factory: Callable[..., GalleryQueue],
+    fake_store: FakeDBStore,
+) -> None:
+    queue = queue_factory()
+    request = queue.request_download(1)
+    turn = queue.claim_download_turn(lease_seconds=300)
+    assert turn is not None
+
+    assert queue.finish_download_turn(turn, request)
+
+    assert fake_store.download_requests == {}
+    assert fake_store.completed_ingest_generation == turn.generation
+    assert fake_store.database_gate_timeouts == [300] * 3
+    assert fake_store.connector_exit_gate_depths == [1] * 3
+
+
+def test_stale_download_turn_cannot_renew_or_handoff(
+    queue_factory: Callable[..., GalleryQueue],
+    fake_store: FakeDBStore,
+) -> None:
+    from .conftest import FakeDownloadTurn
+
+    queue = queue_factory()
+    stale_turn = FakeDownloadTurn(99, "stale")
+    request = queue.request_download(1)
+
+    assert not queue.renew_download_turn(stale_turn, lease_seconds=300)
+    assert not queue.request_gallery_ingest(stale_turn)
+    assert not queue.finish_download_turn(stale_turn, request)
+    assert fake_store.download_requests == {1: request}
+
+
 def test_request_identity_uses_gid_and_token_not_mutable_url(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
