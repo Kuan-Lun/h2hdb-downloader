@@ -73,7 +73,7 @@ h2hdb ingest. Callers that require backpressure must use a deep method or
 uv pip install -e .
 
 # Type checking (strict mode configured in mypy.ini)
-uv run mypy src
+uv run mypy src/h2hdb_downloader tests
 
 # Linting with ruff (rules in pyproject.toml: E, F, I, UP)
 uv run ruff check .
@@ -114,10 +114,15 @@ Follow SOLID principles when writing code:
     [.vscode/settings.json](.vscode/settings.json) (`[python]` block), the
     `[tool.ruff]` section of [pyproject.toml](pyproject.toml),
     [mypy.ini](mypy.ini), and
-    [.claude/hooks/finalize-python.sh](.claude/hooks/finalize-python.sh).
+    [scripts/hooks/finalize-python.sh](scripts/hooks/finalize-python.sh),
+    called by both Claude and Codex.
   - Markdown formatting: [.vscode/settings.json](.vscode/settings.json)
     (`[markdown]` block) and
-    [.claude/hooks/finalize-markdown.sh](.claude/hooks/finalize-markdown.sh).
+    [scripts/hooks/finalize-markdown.sh](scripts/hooks/finalize-markdown.sh),
+    called by both Claude and Codex.
+  - Claude registers the shared scripts in
+    [.claude/settings.local.json](.claude/settings.local.json); Codex's
+    [.Codex/hooks](.Codex/hooks) wrappers forward to those same scripts.
   - Tool versions: the `dev` group of `[project.optional-dependencies]` in
     [pyproject.toml](pyproject.toml) pins `black`, `ruff`, `mypy`, and
     `pymarkdownlnt`. Both the IDE pipeline (when invoked via `uv run`) and the
