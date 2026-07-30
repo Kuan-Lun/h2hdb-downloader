@@ -23,6 +23,10 @@ the browser session and the overall process lifecycle.
   an older attempt finishing late. h2hdb also uses this table to publish a
   redownload request after all active deletion-candidate folders for a gid
   have actually disappeared.
+- **Database coordination** — every short h2hdb read/write section enters
+  h2hdb's cross-process maintenance gate with a five-minute wait interval.
+  Browser search, downloads, retry sleeps, and tag traversal stay outside the
+  gate, so maintenance is never blocked by network work.
 - **Manual queue** — add a `(gid, url)` row to the CSV configured by
   `csv_path`. It is converted into the same durable request and picked up
   the next time the queue is drained. Before replay, the inbox is atomically

@@ -222,6 +222,19 @@ def test_request_download_returns_token_and_completion_is_conditional(
     assert fake_store.download_requests == {}
 
 
+def test_database_operations_use_the_five_minute_maintenance_gate(
+    queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
+) -> None:
+    queue = queue_factory()
+
+    request = queue.request_download(1)
+    queue.complete_download_request(request)
+
+    assert fake_store.database_gate_timeouts == [300, 300]
+    assert fake_store.connector_exit_gate_depths == [1, 1]
+    assert fake_store.database_gate_depth == 0
+
+
 def test_request_identity_uses_gid_and_token_not_mutable_url(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:

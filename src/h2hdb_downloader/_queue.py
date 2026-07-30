@@ -16,6 +16,8 @@ ties together:
 
 import csv
 import os
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from random import random
@@ -144,6 +146,15 @@ class GalleryQueue:
         self.wocount_max = random_wocount_max()
         self._sync_csv_into_db()
 
+    @contextmanager
+    def _database_operation(self) -> Generator[H2HDB]:
+        """Yield h2hdb while its cross-process maintenance gate is held."""
+
+        connector = H2HDB(config=self.config)
+        with connector.database_gate(timeout_seconds=300):
+            with connector:
+                yield connector
+
     def _sync_csv_into_db(self) -> None:
         if self.csv_path is None:
             return
@@ -166,7 +177,7 @@ class GalleryQueue:
 
         entries = read_todownload_csv(claim_path)
         if entries:
-            with H2HDB(config=self.config) as connector:
+            with self._database_operation() as connector:
                 for entry in entries:
                     connector.request_download(entry.gid, entry.url)
 
@@ -192,15 +203,15 @@ class GalleryQueue:
         return connector.get_download_requests()
 
     def request_download(self, gid: int, url: str = "") -> DownloadRequest:
-        with H2HDB(config=self.config) as connector:
+        with self._database_operation() as connector:
             return connector.request_download(gid, url)
 
     def complete_download_request(self, request: DownloadRequest) -> None:
-        with H2HDB(config=self.config) as connector:
+        with self._database_operation() as connector:
             connector.complete_download_request(request)
 
     def is_current(self, request: DownloadRequest) -> bool:
-        with H2HDB(config=self.config) as connector:
+        with self._database_operation() as connector:
             current = connector.get_download_request(request.gid)
         return (
             current is not None
@@ -211,11 +222,11 @@ class GalleryQueue:
     def download_requests(self) -> list[DownloadRequest]:
         """Absorb manual CSV work, then return a live database snapshot."""
         self._sync_csv_into_db()
-        with H2HDB(config=self.config) as connector:
+        with self._database_operation() as connector:
             return self._fetch_download_requests(connector)
 
     def should_attempt(self, gid: int) -> bool:
-        with H2HDB(config=self.config) as connector:
+        with self._database_operation() as connector:
             is_downloaded = connector.gallery_gids.check_gid_by_gid(gid)
             is_pending = gid in connector.get_pending_download_gids()
             is_requested = connector.get_download_request(gid) is not None
@@ -228,7 +239,7 @@ class GalleryQueue:
         )
 
     def pending_redownload_gids(self) -> list[int]:
-        with H2HDB(config=self.config) as connector:
+        with self._database_operation() as connector:
             return connector.get_pending_download_gids()
 
     def note_skip(self) -> None:

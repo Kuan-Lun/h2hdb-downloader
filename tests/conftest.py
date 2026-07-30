@@ -1,4 +1,5 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -25,6 +26,12 @@ class FakeDBStore:
     redownload_time_updates: list[int] = field(default_factory=list)
     request_download_error: Exception | None = None
     request_download_observer: Callable[[], None] | None = None
+    database_gate_depth: int = 0
+    database_gate_timeouts: list[int] = field(default_factory=list)
+    connector_exit_gate_depths: list[int] = field(default_factory=list)
+
+    def assert_database_gate(self) -> None:
+        assert self.database_gate_depth > 0
 
 
 class FakeGalleryGIDs:
@@ -32,9 +39,11 @@ class FakeGalleryGIDs:
         self.store = store
 
     def get_gids(self) -> list[int]:
+        self.store.assert_database_gate()
         return list(self.store.gids)
 
     def check_gid_by_gid(self, gid: int) -> bool:
+        self.store.assert_database_gate()
         return gid in self.store.gids
 
 
@@ -43,6 +52,7 @@ class FakeRemovedGalleries:
         self.store = store
 
     def insert_removed_gallery_gid(self, gid: int) -> None:
+        self.store.assert_database_gate()
         self.store.removed_gids.add(gid)
 
 
@@ -56,9 +66,20 @@ class FakeConnector:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        return None
+        self.store.connector_exit_gate_depths.append(self.store.database_gate_depth)
+        self.store.assert_database_gate()
+
+    @contextmanager
+    def database_gate(self, *, timeout_seconds: int) -> Generator[FakeConnector]:
+        self.store.database_gate_timeouts.append(timeout_seconds)
+        self.store.database_gate_depth += 1
+        try:
+            yield self
+        finally:
+            self.store.database_gate_depth -= 1
 
     def get_pending_download_gids(self) -> list[int]:
+        self.store.assert_database_gate()
         return [
             gid
             for gid in self.store.pending_download_gids
@@ -67,12 +88,15 @@ class FakeConnector:
         ]
 
     def get_download_requests(self) -> list[DownloadRequest]:
+        self.store.assert_database_gate()
         return sorted(self.store.download_requests.values(), key=lambda item: item.gid)
 
     def get_download_request(self, gid: int) -> DownloadRequest | None:
+        self.store.assert_database_gate()
         return self.store.download_requests.get(gid)
 
     def request_download(self, gid: int, url: str = "") -> DownloadRequest:
+        self.store.assert_database_gate()
         if self.store.request_download_error is not None:
             raise self.store.request_download_error
         if self.store.request_download_observer is not None:
@@ -93,23 +117,27 @@ class FakeConnector:
         return request
 
     def complete_download_request(self, request: DownloadRequest) -> None:
+        self.store.assert_database_gate()
         current = self.store.download_requests.get(request.gid)
         if current is not None and current.token == request.token:
             self.store.download_requests.pop(request.gid)
 
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
+        self.store.assert_database_gate()
         self.store.redownload_time_updates.append(gid)
         if gid in self.store.pending_download_gids:
             self.store.pending_download_gids.remove(gid)
 
     def request_gallery_deletion(self, gid: int) -> None:
+        self.store.assert_database_gate()
         self.store.todelete_gids.add(gid)
 
 
 class FakeDriver:
     """Stand-in for ``hbrowser.ExHDriver``: scripted responses, recorded calls."""
 
-    def __init__(self) -> None:
+    def __init__(self, store: FakeDBStore) -> None:
+        self.store = store
         self.download_calls: list[GalleryURLParser] = []
         self.search_calls: list[tuple[str, bool]] = []
         self.get_calls: list[str] = []
@@ -123,21 +151,25 @@ class FakeDriver:
         self.tag_results: dict[str, list[object]] = {}
 
     async def download(self, gallery: GalleryURLParser) -> bool:
+        assert self.store.database_gate_depth == 0
         self.download_calls.append(gallery)
         if callable(self.download_result):
             return await self.download_result(gallery)
         return self.download_result
 
     async def search(self, key: str, isclear: bool) -> list[GalleryURLParser]:
+        assert self.store.database_gate_depth == 0
         self.search_calls.append((key, isclear))
         if self.search_observer is not None:
             self.search_observer(key, isclear)
         return self.search_results.get(key, [])
 
     async def get(self, url: str) -> None:
+        assert self.store.database_gate_depth == 0
         self.get_calls.append(url)
 
     async def gallery2tag(self, gallery: GalleryURLParser, filter: str) -> list[object]:
+        assert self.store.database_gate_depth == 0
         self.gallery2tag_calls.append((gallery, filter))
         return self.tag_results.get(filter, [])
 
@@ -155,13 +187,12 @@ def fake_store() -> FakeDBStore:
 def patch_h2hdb(
     monkeypatch: pytest.MonkeyPatch, fake_store: FakeDBStore
 ) -> FakeDBStore:
-    """Redirect both modules' ``H2HDB`` lookups at the shared fake store."""
+    """Redirect the queue's ``H2HDB`` lookup at the shared fake store."""
 
     def factory(*, config: object) -> FakeConnector:
         return FakeConnector(fake_store)
 
     monkeypatch.setattr("h2hdb_downloader._queue.H2HDB", factory)
-    monkeypatch.setattr("h2hdb_downloader.downloader.H2HDB", factory)
     return fake_store
 
 
@@ -174,8 +205,8 @@ def no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def fake_driver() -> FakeDriver:
-    return FakeDriver()
+def fake_driver(fake_store: FakeDBStore) -> FakeDriver:
+    return FakeDriver(fake_store)
 
 
 @pytest.fixture

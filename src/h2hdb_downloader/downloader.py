@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from random import random
 
 from h2h_galleryinfo_parser import GalleryURLParser
-from h2hdb import H2HDB, DownloadRequest, load_config
+from h2hdb import DownloadRequest, load_config
 from hbrowser import ExHDriver, Tag
 from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
@@ -145,11 +145,11 @@ class Downloader:
     ) -> bool:
         downloaded = await self.driver.download(gallery)
         if downloaded:
-            with H2HDB(config=self._queue.config) as connector:
+            with self._queue._database_operation() as connector:
                 if connector.gallery_gids.check_gid_by_gid(gallery.gid):
                     connector.update_redownload_time_to_now_by_gid(gallery.gid)
-            if complete_on_success:
-                self._queue.complete_download_request(request)
+                if complete_on_success:
+                    connector.complete_download_request(request)
             await asyncio.sleep(random())
             self._queue.note_download_success()
         return downloaded
@@ -179,9 +179,9 @@ class Downloader:
         galleries = await self.driver.search(f"gid:{gid}", isclear=True)
         match len(galleries):
             case 0:
-                with H2HDB(config=self._queue.config) as connector:
+                with self._queue._database_operation() as connector:
                     connector.removed_galleries.insert_removed_gallery_gid(gid)
-                self._queue.complete_download_request(request)
+                    connector.complete_download_request(request)
             case 1:
                 gallery = galleries[0]
                 is_redirect = gallery.gid != gid
@@ -192,10 +192,10 @@ class Downloader:
                 )
                 gb[gallery.gid] = downloaded
                 if is_redirect and gb[gallery.gid]:
-                    with H2HDB(config=self._queue.config) as connector:
+                    with self._queue._database_operation() as connector:
                         if connector.gallery_gids.check_gid_by_gid(gid):
                             connector.request_gallery_deletion(gid)
-                    self._queue.complete_download_request(request)
+                        connector.complete_download_request(request)
                 if policy is not None and (downloaded or skip_check):
                     gb = _merge_results(
                         gb,

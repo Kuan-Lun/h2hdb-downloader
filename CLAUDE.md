@@ -10,6 +10,12 @@ The package has exactly two public exports (`src/h2hdb_downloader/__init__.py`):
 `Downloader` and `TagCascadePolicy`, both defined in
 `src/h2hdb_downloader/downloader.py`.
 
+All h2hdb access must go through `GalleryQueue._database_operation()`, which
+holds h2hdb's cross-process maintenance gate with `timeout_seconds=300`.
+Keep browser/network awaits, retry sleeps, and tag traversal outside that
+context. A timeout is one wait interval, not a terminal failure; h2hdb logs it
+and continues waiting.
+
 ## Communication
 
 - Claude 必須以繁體中文回答所有對話內容，不論使用者以何種語言提問；程式碼、指令、檔名、專有名詞等仍維持原文。
