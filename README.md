@@ -29,7 +29,13 @@ the browser session and the overall process lifecycle.
   atomic h2hdb transaction. A late worker that has lost its turn therefore
   cannot delete the recovered root request. If another caller has replaced
   the request token while the turn is still valid, that newer request remains
-  queued while the completed turn still hands off successfully.
+  queued while the completed turn still hands off successfully. A GID is
+  recorded as removed only from hbrowser's explicit
+  `ConfirmedGalleryMissing` result, never by interpreting an empty or
+  malformed page. For a coordinated root, the removed marker, exact-token
+  deletion, and fenced handoff are one transaction. The marker and deletion
+  occur only if that exact request token is still current; a newer request
+  fences both mutations.
 - **Database coordination** — every short h2hdb read/write section enters
   h2hdb's cross-process maintenance gate with a five-minute wait interval.
   Browser search, downloads, retry sleeps, and tag traversal stay outside the
@@ -38,17 +44,23 @@ the browser session and the overall process lifecycle.
   durable download turn before doing network work. An asynchronous heartbeat
   renews its lease while the complete related-tag cascade runs. On success,
   a resolved root atomically finishes its exact request and requests ingest.
-  An unresolved, failed, or cancelled root requests ingest without removing
-  its durable request. After a normal root return, the downloader waits until
-  h2hdb has completed that turn's generation before another root may start. If
-  the process is killed, the lease expires so h2hdb can ingest files already
-  written to disk. This coordination is logical state made of short database
-  calls: it never holds a transaction or database maintenance gate across
-  browser work. SQLite may temporarily report `BUSY` or `LOCKED` while another
-  h2hdb process holds the exclusive lock needed by `VACUUM`; only the
-  ready-turn claim and completed-generation polling boundaries retry those
-  lock codes at `turn_poll_seconds`. Other SQLite errors and all non-polling
-  operation failures still propagate immediately.
+  A confirmed-missing root atomically records the removed marker, finishes
+  its exact request, and requests ingest only while that token remains current;
+  the handoff still succeeds without those mutations when a newer token exists.
+  An unresolved, failed, or cancelled root requests ingest without removing its
+  durable request. Once this generic handoff commits, a later finish replay
+  cannot convert it into a success or missing mutation. If the exception
+  handoff is rejected because the turn was lost, the downloader raises
+  `DownloadTurnLostError` with the original failure as its cause. After a normal
+  root return, the downloader waits until h2hdb has completed that turn's
+  generation before another root may start. If the process is killed, the lease
+  expires so h2hdb can ingest files already written to disk. This coordination
+  is logical state made of short database calls: it never holds a transaction
+  or database maintenance gate across browser work. SQLite may temporarily
+  report `BUSY` or `LOCKED` while another h2hdb process holds the exclusive lock
+  needed by `VACUUM`; only the ready-turn claim and completed-generation polling
+  boundaries retry those lock codes at `turn_poll_seconds`. Other SQLite errors
+  and all non-polling operation failures still propagate immediately.
 - **Manual queue** — add a `(gid, url)` row to the CSV configured by
   `csv_path`. It is converted into the same durable request and picked up
   the next time the queue is drained. Before replay, the inbox is atomically
@@ -108,7 +120,7 @@ already-entered driver and skip `async with downloader`.
 
 Method names follow one rule throughout: no suffix means it operates
 directly on a `GalleryURLParser` you already have; `_by_gid` means it
-resolves a bare gid to its gallery via search first, then does the same
+resolves a bare gid through hbrowser's exact typed lookup first, then does the same
 thing.
 
 - `await download_by_gallery(target)` — download one `GalleryURLParser`, or
@@ -117,12 +129,15 @@ thing.
   and `InsufficientFundsException` (waits `retry2download` seconds); a wait
   of `0` means "don't retry, raise immediately." This is a direct API and
   does not claim a download turn or wait for h2hdb ingest.
-- `await download_by_gid(gid)` — resolve a bare gid to its gallery via
-  search, then download it. If the gid no longer resolves to anything, it's
-  recorded as removed in h2hdb; if it resolves to a *different* gid (the
-  gallery was merged/redirected), the original gid is flagged for deletion
-  after the replacement downloads successfully. This is also a direct,
-  uncoordinated API.
+- `await download_by_gid(gid)` — resolve a bare gid through hbrowser's exact
+  lookup, then download it. Only an explicit, independently confirmed missing
+  result is recorded as removed in h2hdb; challenge, authentication, malformed,
+  pagination, navigation, and bounded-search failures raise and leave the
+  request retryable. A later successful lookup clears any stale removed
+  marker. If the gid resolves to a *different* gid (the gallery was
+  merged/redirected), the original gid is flagged for deletion after the
+  replacement downloads successfully. This is also a direct, uncoordinated
+  API.
 - `await download_by_tag(tag, conditions)` — download every gallery under a
   `hbrowser` `Tag`, once per search condition in `conditions` (or
   unconditionally if `conditions` is empty). This is also a direct,

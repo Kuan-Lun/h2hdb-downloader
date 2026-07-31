@@ -3,12 +3,18 @@ from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from types import TracebackType
+from typing import Self, cast
 
 import pytest
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import DownloadRequest, H2HDBConfig
-from hbrowser import ExHDriver
+from hbrowser import (
+    GalleryLookupResult,
+    GallerySearchResult,
+    SearchRequest,
+    Tag,
+)
 
 from h2hdb_downloader._queue import GalleryQueue
 from h2hdb_downloader.downloader import Downloader
@@ -57,6 +63,9 @@ class FakeDBStore:
     finished_download_turns: list[tuple[FakeDownloadTurn, DownloadRequest]] = field(
         default_factory=list
     )
+    finished_missing_download_turns: list[
+        tuple[FakeDownloadTurn, DownloadRequest, int]
+    ] = field(default_factory=list)
     finish_download_turn_observer: Callable[[], None] | None = None
     accepted_gallery_ingest_turns: set[FakeDownloadTurn] = field(default_factory=set)
     gallery_ingest_state_reads: int = 0
@@ -96,6 +105,10 @@ class FakeRemovedGalleries:
     def insert_removed_gallery_gid(self, gid: int) -> None:
         self.store.assert_database_gate()
         self.store.removed_gids.add(gid)
+
+    def delete_removed_gallery_gid(self, gid: int) -> None:
+        self.store.assert_database_gate()
+        self.store.removed_gids.discard(gid)
 
 
 class FakeConnector:
@@ -163,6 +176,21 @@ class FakeConnector:
         current = self.store.download_requests.get(request.gid)
         if current is not None and current.token == request.token:
             self.store.download_requests.pop(request.gid)
+
+    def complete_missing_download_request(
+        self,
+        request: DownloadRequest,
+        gid: int,
+    ) -> None:
+        self.store.assert_database_gate()
+        current = self.store.download_requests.get(request.gid)
+        if current is not None and current.token == request.token:
+            self.store.download_requests.pop(request.gid)
+            self.store.removed_gids.add(gid)
+
+    def clear_removed_gallery_gid(self, gid: int) -> None:
+        self.store.assert_database_gate()
+        self.store.removed_gids.discard(gid)
 
     def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
         self.store.assert_database_gate()
@@ -238,6 +266,29 @@ class FakeConnector:
             self.store.complete_gallery_ingest()
         return True
 
+    def finish_missing_download_turn(
+        self,
+        turn: FakeDownloadTurn,
+        request: DownloadRequest,
+        gid: int,
+    ) -> bool:
+        self.store.assert_database_gate()
+        self.store.finished_missing_download_turns.append((turn, request, gid))
+        if turn in self.store.accepted_gallery_ingest_turns:
+            return True
+        if self.store.active_download_turn != turn:
+            return False
+
+        current = self.store.download_requests.get(request.gid)
+        if current is not None and current.token == request.token:
+            self.store.download_requests.pop(request.gid)
+            self.store.removed_gids.add(gid)
+        self.store.accepted_gallery_ingest_turns.add(turn)
+        self.store.handed_off_turn = turn
+        if self.store.auto_complete_gallery_ingest:
+            self.store.complete_gallery_ingest()
+        return True
+
     def get_gallery_ingest_state(self) -> FakeGalleryIngestState:
         self.store.assert_database_gate()
         self.store.gallery_ingest_state_reads += 1
@@ -250,16 +301,29 @@ class FakeDriver:
     def __init__(self, store: FakeDBStore) -> None:
         self.store = store
         self.download_calls: list[GalleryURLParser] = []
-        self.search_calls: list[tuple[str, bool]] = []
-        self.get_calls: list[str] = []
+        self.lookup_calls: list[int] = []
+        self.search_calls: list[SearchRequest] = []
         self.gallery2tag_calls: list[tuple[GalleryURLParser, str]] = []
 
         self.download_result: bool | Callable[[GalleryURLParser], Awaitable[bool]] = (
             True
         )
-        self.search_results: dict[str, list[GalleryURLParser]] = {}
-        self.search_observer: Callable[[str, bool], None] | None = None
-        self.tag_results: dict[str, list[object]] = {}
+        self.lookup_results: dict[int, GalleryLookupResult] = {}
+        self.lookup_observer: Callable[[int], None] | None = None
+        self.search_results: dict[tuple[str, str], tuple[GalleryURLParser, ...]] = {}
+        self.search_observer: Callable[[SearchRequest], None] | None = None
+        self.tag_results: dict[str, list[Tag]] = {}
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        pass
 
     async def download(self, gallery: GalleryURLParser) -> bool:
         assert self.store.database_gate_depth == 0
@@ -268,18 +332,33 @@ class FakeDriver:
             return await self.download_result(gallery)
         return self.download_result
 
-    async def search(self, key: str, isclear: bool) -> list[GalleryURLParser]:
+    async def lookup_gid(self, gid: int) -> GalleryLookupResult:
         assert self.store.database_gate_depth == 0
-        self.search_calls.append((key, isclear))
+        self.lookup_calls.append(gid)
+        if self.lookup_observer is not None:
+            self.lookup_observer(gid)
+        try:
+            return self.lookup_results[gid]
+        except KeyError:
+            raise AssertionError(f"Unscripted GID lookup: {gid}") from None
+
+    async def search(self, request: SearchRequest) -> GallerySearchResult:
+        assert self.store.database_gate_depth == 0
+        self.search_calls.append(request)
         if self.search_observer is not None:
-            self.search_observer(key, isclear)
-        return self.search_results.get(key, [])
+            self.search_observer(request)
+        key = (request.scope_url, request.query)
+        try:
+            galleries = self.search_results[key]
+        except KeyError:
+            raise AssertionError(f"Unscripted gallery search: {request!r}") from None
+        return GallerySearchResult(
+            request=request,
+            galleries=galleries,
+            pages_visited=1,
+        )
 
-    async def get(self, url: str) -> None:
-        assert self.store.database_gate_depth == 0
-        self.get_calls.append(url)
-
-    async def gallery2tag(self, gallery: GalleryURLParser, filter: str) -> list[object]:
+    async def gallery2tag(self, gallery: GalleryURLParser, filter: str) -> list[Tag]:
         assert self.store.database_gate_depth == 0
         self.gallery2tag_calls.append((gallery, filter))
         return self.tag_results.get(filter, [])
@@ -353,7 +432,7 @@ def downloader_factory(
         turn_heartbeat_seconds: float = 60,
     ) -> Downloader:
         return Downloader(
-            cast(ExHDriver, fake_driver),
+            fake_driver,
             config_path="unused.json",
             csv_path=tmp_path / "todownload_gids.csv",
             wait4client=wait4client,

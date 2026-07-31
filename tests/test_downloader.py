@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import DownloadRequest
-from hbrowser import Tag
+from hbrowser import (
+    ConfirmedGalleryMissing,
+    GalleryFound,
+    MalformedSearchPageError,
+    SearchRequest,
+    Tag,
+)
 from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
 from h2hdb_downloader import DownloadTurnLostError
@@ -209,11 +215,11 @@ async def test_download_by_gid_marks_removed_when_gallery_no_longer_exists(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    def assert_request_precedes_search(key: str, _isclear: bool) -> None:
-        gid = int(key.removeprefix("gid:"))
+    def assert_request_precedes_lookup(gid: int) -> None:
         assert fake_store.download_requests[gid].gid == gid
 
-    fake_driver.search_observer = assert_request_precedes_search
+    fake_driver.lookup_observer = assert_request_precedes_lookup
+    fake_driver.lookup_results[404] = ConfirmedGalleryMissing(404, 2)
     downloader = downloader_factory()
 
     result = await downloader.download_by_gid(404)
@@ -229,13 +235,46 @@ async def test_download_by_gid_marks_todelete_when_gid_redirects(
     fake_driver: FakeDriver,
 ) -> None:
     fake_store.gids = {999}
-    fake_driver.search_results["gid:999"] = [gallery(1)]
+    fake_store.removed_gids = {1, 999}
+    fake_driver.lookup_results[999] = GalleryFound(999, gallery(1))
     downloader = downloader_factory()
 
     result = await downloader.download_by_gid(999)
 
     assert result == {1: True}
     assert 999 in fake_store.todelete_gids
+    assert fake_store.removed_gids == set()
+
+
+async def test_found_gid_clears_stale_missing_marker_even_when_download_fails(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    fake_store.removed_gids = {1}
+    fake_driver.lookup_results[1] = GalleryFound(1, gallery(1))
+    fake_driver.download_result = False
+    downloader = downloader_factory()
+
+    assert await downloader.download_by_gid(1) == {1: False}
+
+    assert fake_store.removed_gids == set()
+    assert 1 in fake_store.download_requests
+
+
+async def test_download_by_gid_rejects_mismatched_lookup_result(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    fake_driver.lookup_results[1] = ConfirmedGalleryMissing(2, 2)
+    downloader = downloader_factory()
+
+    with pytest.raises(RuntimeError, match="wrong GID"):
+        await downloader.download_by_gid(1)
+
+    assert 1 in fake_store.download_requests
+    assert fake_store.removed_gids == set()
 
 
 async def test_deep_download_cascades_into_tags(
@@ -244,8 +283,8 @@ async def test_deep_download_cascades_into_tags(
     seed = gallery(1)
     sibling = gallery(2)
     tag = SimpleNamespace(href="https://exhentai.org/tag/artist:someone")
-    fake_driver.tag_results["artist"] = [tag]
-    fake_driver.search_results[""] = [sibling]
+    fake_driver.tag_results["artist"] = [cast(Tag, tag)]
+    fake_driver.search_results[(tag.href, "")] = (sibling,)
 
     downloader = downloader_factory()
     result = await downloader.deep_download_by_gallery(
@@ -253,7 +292,28 @@ async def test_deep_download_cascades_into_tags(
     )
 
     assert result == {1: True, 2: True}
-    assert fake_driver.get_calls == [tag.href]
+    assert fake_driver.search_calls == [SearchRequest(scope_url=tag.href, query="")]
+
+
+async def test_download_by_tag_uses_an_explicit_request_for_each_condition(
+    downloader_factory: Callable[..., Downloader],
+    fake_driver: FakeDriver,
+) -> None:
+    tag = cast(
+        Tag,
+        SimpleNamespace(href="https://exhentai.org/tag/artist:someone"),
+    )
+    conditions = ("language:chinese$", "language:speechless$")
+    fake_driver.search_results[(tag.href, conditions[0])] = (gallery(1),)
+    fake_driver.search_results[(tag.href, conditions[1])] = (gallery(2),)
+    downloader = downloader_factory()
+
+    result = await downloader.download_by_tag(tag, conditions)
+
+    assert result == {1: True, 2: True}
+    assert fake_driver.search_calls == [
+        SearchRequest(scope_url=tag.href, query=condition) for condition in conditions
+    ]
 
 
 async def test_deep_download_skips_cascade_when_seed_skipped_and_no_skip_check(
@@ -284,8 +344,8 @@ async def test_deep_download_skip_check_forces_cascade_despite_seed_being_skippe
     sibling = gallery(2)
     tag = SimpleNamespace(href="https://exhentai.org/tag/artist:someone")
     fake_store.gids = {1}
-    fake_driver.tag_results["artist"] = [tag]
-    fake_driver.search_results[""] = [sibling]
+    fake_driver.tag_results["artist"] = [cast(Tag, tag)]
+    fake_driver.search_results[(tag.href, "")] = (sibling,)
 
     downloader = downloader_factory()
     downloader._queue.wocount_max = 1000
@@ -298,10 +358,13 @@ async def test_deep_download_skip_check_forces_cascade_despite_seed_being_skippe
 
 
 async def test_download_by_gid_settles_pending_gid_even_when_removed(
-    downloader_factory: Callable[..., Downloader], fake_store: FakeDBStore
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
 ) -> None:
     fake_store.gids = {404}
     fake_store.pending_download_gids = [404]
+    fake_driver.lookup_results[404] = ConfirmedGalleryMissing(404, 2)
     downloader = downloader_factory()
 
     await downloader.download_by_gid(404)
@@ -316,7 +379,7 @@ async def test_download_by_gid_settles_original_gid_when_redirected(
 ) -> None:
     fake_store.gids = {999}
     fake_store.pending_download_gids = [999]
-    fake_driver.search_results["gid:999"] = [gallery(1)]
+    fake_driver.lookup_results[999] = GalleryFound(999, gallery(1))
     downloader = downloader_factory()
 
     await downloader.download_by_gid(999)
@@ -350,7 +413,7 @@ async def test_application_loop_drains_residual_queue_then_redownloads_pending(
     fake_store.gids = {1, 2}
     fake_store.download_requests = {1: DownloadRequest(1, gallery(1).url, "request-1")}
     fake_store.pending_download_gids = [2]
-    fake_driver.search_results["gid:2"] = [gallery(2)]
+    fake_driver.lookup_results[2] = GalleryFound(2, gallery(2))
 
     downloader = downloader_factory()
     policy = TagCascadePolicy(filters=(), conditions=())
@@ -374,7 +437,7 @@ async def test_drain_queue_url_entry_falls_back_to_gid_search_on_failure(
     the gallery is gone (rather than silently dropping the queue entry)."""
     fake_store.download_requests = {1: DownloadRequest(1, gallery(1).url, "request-1")}
     fake_driver.download_result = False
-    fake_driver.search_results["gid:1"] = []  # gallery no longer exists
+    fake_driver.lookup_results[1] = ConfirmedGalleryMissing(1, 2)
 
     downloader = downloader_factory()
     policy = TagCascadePolicy(filters=(), conditions=())
@@ -384,7 +447,8 @@ async def test_drain_queue_url_entry_falls_back_to_gid_search_on_failure(
     assert 1 in fake_store.removed_gids
     assert fake_store.download_requests == {}
     assert len(fake_store.claim_download_turn_calls) == 1
-    assert len(fake_store.finished_download_turns) == 1
+    assert len(fake_store.finished_missing_download_turns) == 1
+    assert fake_store.finished_download_turns == []
     assert fake_store.gallery_ingest_requests == []
 
 
@@ -420,7 +484,7 @@ async def test_drain_queue_false_result_keeps_original_request(
     request = DownloadRequest(1, gallery(1).url, "request-1")
     fake_store.download_requests = {1: request}
     fake_driver.download_result = False
-    fake_driver.search_results["gid:1"] = [gallery(1)]
+    fake_driver.lookup_results[1] = GalleryFound(1, gallery(1))
     downloader = downloader_factory()
 
     result = await downloader.drain_queue(TagCascadePolicy(filters=(), conditions=()))
@@ -449,12 +513,77 @@ async def test_drain_queue_exception_keeps_original_request(
     assert fake_store.download_requests == {1: request}
 
 
+async def test_drain_queue_search_error_keeps_request_and_hands_off(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    request = DownloadRequest(349189, "", "request-349189")
+    fake_store.download_requests = {request.gid: request}
+
+    error = MalformedSearchPageError(
+        query="gid:349189",
+        url="https://exhentai.org/?f_search=gid%3A349189",
+        title="Gallery List",
+        reason="search page did not reach a terminal state",
+    )
+
+    def fail_lookup(gid: int) -> None:
+        assert gid == 349189
+        raise error
+
+    fake_driver.lookup_observer = fail_lookup
+    downloader = downloader_factory()
+
+    with pytest.raises(MalformedSearchPageError) as raised:
+        await downloader.drain_queue(TagCascadePolicy(filters=(), conditions=()))
+
+    assert raised.value is error
+    assert fake_store.download_requests == {request.gid: request}
+    assert fake_store.removed_gids == set()
+    assert len(fake_store.gallery_ingest_requests) == 1
+    assert fake_store.finished_download_turns == []
+
+
+async def test_failed_root_reports_turn_loss_when_exception_handoff_is_rejected(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    request = DownloadRequest(349189, "", "request-349189")
+    fake_store.download_requests = {request.gid: request}
+    error = MalformedSearchPageError(
+        query="gid:349189",
+        url="https://exhentai.org/?f_search=gid%3A349189",
+        title="Gallery List",
+        reason="search page did not reach a terminal state",
+    )
+
+    def fail_after_losing_turn(gid: int) -> None:
+        assert gid == request.gid
+        fake_store.active_download_turn = None
+        raise error
+
+    fake_driver.lookup_observer = fail_after_losing_turn
+    downloader = downloader_factory()
+
+    with pytest.raises(DownloadTurnLostError) as raised:
+        await downloader.drain_queue(TagCascadePolicy(filters=(), conditions=()))
+
+    assert raised.value.__cause__ is error
+    assert fake_store.download_requests == {request.gid: request}
+    assert fake_store.removed_gids == set()
+    assert len(fake_store.gallery_ingest_requests) == 1
+
+
 async def test_drain_queue_removed_gid_completes_original_request(
     downloader_factory: Callable[..., Downloader],
     fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
 ) -> None:
     request = DownloadRequest(404, "", "request-404")
     fake_store.download_requests = {404: request}
+    fake_driver.lookup_results[404] = ConfirmedGalleryMissing(404, 2)
     downloader = downloader_factory()
 
     result = await downloader.drain_queue(TagCascadePolicy(filters=(), conditions=()))
@@ -462,6 +591,34 @@ async def test_drain_queue_removed_gid_completes_original_request(
     assert result == {}
     assert 404 in fake_store.removed_gids
     assert fake_store.download_requests == {}
+    assert len(fake_store.finished_missing_download_turns) == 1
+    assert fake_store.finished_download_turns == []
+
+
+async def test_missing_lookup_cannot_settle_a_newer_request_token(
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    stale_request = DownloadRequest(404, "", "request-404")
+    newer_request = DownloadRequest(404, gallery(404).url, "newer-request-404")
+    fake_store.download_requests = {404: stale_request}
+    fake_driver.lookup_results[404] = ConfirmedGalleryMissing(404, 2)
+
+    def replace_request_during_lookup(gid: int) -> None:
+        assert gid == stale_request.gid
+        fake_store.download_requests[gid] = newer_request
+
+    fake_driver.lookup_observer = replace_request_during_lookup
+    downloader = downloader_factory()
+
+    result = await downloader.drain_queue(TagCascadePolicy(filters=(), conditions=()))
+
+    assert result == {}
+    assert fake_store.download_requests == {404: newer_request}
+    assert fake_store.removed_gids == set()
+    assert len(fake_store.finished_missing_download_turns) == 1
+    assert fake_store.completed_ingest_generation == 1
 
 
 async def test_drain_queue_redirect_success_completes_original_request(
@@ -472,7 +629,7 @@ async def test_drain_queue_redirect_success_completes_original_request(
     request = DownloadRequest(999, "", "request-999")
     fake_store.download_requests = {999: request}
     fake_store.gids = {999}
-    fake_driver.search_results["gid:999"] = [gallery(1)]
+    fake_driver.lookup_results[999] = GalleryFound(999, gallery(1))
     downloader = downloader_factory()
 
     result = await downloader.drain_queue(TagCascadePolicy(filters=(), conditions=()))
@@ -490,7 +647,7 @@ async def test_drain_queue_redirect_failure_keeps_original_request(
     request = DownloadRequest(999, "", "request-999")
     fake_store.download_requests = {999: request}
     fake_store.gids = {999}
-    fake_driver.search_results["gid:999"] = [gallery(1)]
+    fake_driver.lookup_results[999] = GalleryFound(999, gallery(1))
     fake_driver.download_result = False
     downloader = downloader_factory()
 
@@ -527,7 +684,7 @@ async def test_deep_root_waits_for_its_ingest_generation(
     fake_driver: FakeDriver,
 ) -> None:
     fake_store.auto_complete_gallery_ingest = False
-    fake_driver.search_results["gid:1"] = [gallery(1)]
+    fake_driver.lookup_results[1] = GalleryFound(1, gallery(1))
     downloader = downloader_factory()
 
     task = asyncio.create_task(
@@ -582,8 +739,8 @@ async def test_deep_root_request_survives_until_related_cascade_finishes(
     seed = gallery(1)
     sibling = gallery(2)
     tag = SimpleNamespace(href="https://exhentai.org/tag/artist:someone")
-    fake_driver.tag_results["artist"] = [tag]
-    fake_driver.search_results[""] = [sibling]
+    fake_driver.tag_results["artist"] = [cast(Tag, tag)]
+    fake_driver.search_results[(tag.href, "")] = (sibling,)
     sibling_started = asyncio.Event()
     release_sibling = asyncio.Event()
 
@@ -622,8 +779,8 @@ async def test_deep_cascade_exception_keeps_root_request_and_hands_off(
     seed = gallery(1)
     sibling = gallery(2)
     tag = SimpleNamespace(href="https://exhentai.org/tag/artist:someone")
-    fake_driver.tag_results["artist"] = [tag]
-    fake_driver.search_results[""] = [sibling]
+    fake_driver.tag_results["artist"] = [cast(Tag, tag)]
+    fake_driver.search_results[(tag.href, "")] = (sibling,)
 
     async def fail_sibling(target: GalleryURLParser) -> bool:
         if target.gid == sibling.gid:
@@ -845,18 +1002,17 @@ async def test_direct_download_apis_do_not_claim_an_ingest_turn(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    fake_driver.search_results["gid:2"] = [gallery(2)]
+    tag = cast(
+        Tag,
+        SimpleNamespace(href="https://exhentai.org/tag/artist:someone"),
+    )
+    fake_driver.lookup_results[2] = GalleryFound(2, gallery(2))
+    fake_driver.search_results[(tag.href, "")] = ()
     downloader = downloader_factory()
 
     await downloader.download_by_gallery(gallery(1))
     await downloader.download_by_gid(2)
-    await downloader.download_by_tag(
-        cast(
-            Tag,
-            SimpleNamespace(href="https://exhentai.org/tag/artist:someone"),
-        ),
-        (),
-    )
+    await downloader.download_by_tag(tag, ())
 
     assert fake_store.claim_download_turn_calls == []
     assert fake_store.gallery_ingest_requests == []

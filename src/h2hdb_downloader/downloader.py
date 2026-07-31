@@ -6,10 +6,19 @@ from dataclasses import dataclass
 from functools import partial
 from math import isfinite
 from random import random
+from types import TracebackType
+from typing import Protocol, Self, assert_never
 
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import DownloadRequest, load_config
-from hbrowser import ExHDriver, Tag
+from hbrowser import (
+    ConfirmedGalleryMissing,
+    GalleryFound,
+    GalleryLookupResult,
+    GallerySearchResult,
+    SearchRequest,
+    Tag,
+)
 from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
 from ._queue import DownloadTurn, GalleryQueue
@@ -45,13 +54,61 @@ class TagCascadePolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class _KeepRequest:
+    """The durable root request must remain queued."""
+
+
+@dataclass(frozen=True, slots=True)
+class _CompleteRequest:
+    """The durable root request completed successfully."""
+
+    request: DownloadRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfirmMissing:
+    """The requested GID was conclusively absent."""
+
+    request: DownloadRequest
+    gid: int
+
+
+type _RootDisposition = _KeepRequest | _CompleteRequest | _ConfirmMissing
+
+_KEEP_REQUEST = _KeepRequest()
+
+
+@dataclass(frozen=True, slots=True)
 class _RootDownloadResult:
     downloads: dict[int, bool]
-    request_to_complete: DownloadRequest | None
+    disposition: _RootDisposition
 
 
 class DownloadTurnLostError(RuntimeError):
     """The process no longer owns the download turn it claimed."""
+
+
+class GalleryDriver(Protocol):
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    async def download(self, gallery: GalleryURLParser) -> bool: ...
+
+    async def lookup_gid(self, gid: int) -> GalleryLookupResult: ...
+
+    async def search(self, request: SearchRequest) -> GallerySearchResult: ...
+
+    async def gallery2tag(
+        self,
+        gallery: GalleryURLParser,
+        filter: str,
+    ) -> list[Tag]: ...
 
 
 class Downloader:
@@ -76,7 +133,7 @@ class Downloader:
 
     def __init__(
         self,
-        driver: ExHDriver,
+        driver: GalleryDriver,
         config_path: str,
         csv_path: str | os.PathLike[str] | None = None,
         *,
@@ -116,8 +173,13 @@ class Downloader:
         await self.driver.__aenter__()
         return self
 
-    async def __aexit__(self, *exc_info: object) -> None:
-        await self.driver.__aexit__(*exc_info)
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.driver.__aexit__(exc_type, exc_value, traceback)
 
     async def download_by_gallery(
         self, target: GalleryURLParser | Iterable[GalleryURLParser]
@@ -195,6 +257,7 @@ class Downloader:
         downloaded = await self.driver.download(gallery)
         if downloaded:
             with self._queue._database_operation() as connector:
+                connector.clear_removed_gallery_gid(gallery.gid)
                 if connector.gallery_gids.check_gid_by_gid(gallery.gid):
                     connector.update_redownload_time_to_now_by_gid(gallery.gid)
                 if complete_on_success:
@@ -224,18 +287,31 @@ class Downloader:
         request: DownloadRequest,
     ) -> _RootDownloadResult:
         if not self._queue.is_current(request):
-            return _RootDownloadResult({}, request_to_complete=None)
+            return _RootDownloadResult({}, disposition=_KEEP_REQUEST)
 
         gb = dict[int, bool]()
-        request_to_complete = None
-        galleries = await self.driver.search(f"gid:{gid}", isclear=True)
-        match len(galleries):
-            case 0:
-                with self._queue._database_operation() as connector:
-                    connector.removed_galleries.insert_removed_gallery_gid(gid)
-                request_to_complete = request
-            case 1:
-                gallery = galleries[0]
+        disposition: _RootDisposition = _KEEP_REQUEST
+        lookup = await self.driver.lookup_gid(gid)
+        match lookup:
+            case ConfirmedGalleryMissing(gid=missing_gid):
+                if missing_gid != gid:
+                    raise RuntimeError(
+                        "Gallery lookup returned a missing result for the wrong GID "
+                        f"(requested={gid}, returned={missing_gid})"
+                    )
+                disposition = _ConfirmMissing(request, gid)
+            case GalleryFound(requested_gid=requested_gid, gallery=gallery):
+                if requested_gid != gid:
+                    raise RuntimeError(
+                        "Gallery lookup returned a result for the wrong GID "
+                        f"(requested={gid}, returned={requested_gid})"
+                    )
+                # The lookup proves both the requested route and its resolved
+                # gallery are live. Clear any stale false-missing markers even
+                # when the following download is unsuccessful.
+                self._queue.clear_removed_gallery_gid(gid)
+                if gallery.gid != gid:
+                    self._queue.clear_removed_gallery_gid(gallery.gid)
                 is_redirect = gallery.gid != gid
                 downloaded = await self._download_one(
                     gallery,
@@ -253,12 +329,12 @@ class Downloader:
                         await self._download_related_galleries(gallery, policy),
                     )
                 if downloaded:
-                    request_to_complete = request
+                    disposition = _CompleteRequest(request)
             case _:
-                raise ValueError("There can only be one gallery or none.")
+                assert_never(lookup)
         return _RootDownloadResult(
             gb,
-            request_to_complete=request_to_complete,
+            disposition=disposition,
         )
 
     async def download_by_tag(
@@ -273,9 +349,16 @@ class Downloader:
         gb = dict[int, bool]()
         searches = conditions or [""]
         for condition in searches:
-            await self.driver.get(tag.href)
-            galleries = await self.driver.search(condition, isclear=False)
-            gb = _merge_results(gb, await self._download_by_gallery(galleries))
+            result = await self.driver.search(
+                SearchRequest(
+                    scope_url=tag.href,
+                    query=condition,
+                )
+            )
+            gb = _merge_results(
+                gb,
+                await self._download_by_gallery(result.galleries),
+            )
         return gb
 
     async def deep_download_by_gallery(
@@ -306,7 +389,7 @@ class Downloader:
             if not skip_check:
                 return _RootDownloadResult(
                     {gallery.gid: False},
-                    request_to_complete=None,
+                    disposition=_KEEP_REQUEST,
                 )
 
             # The root is already settled, but the related-tag traversal is
@@ -319,7 +402,7 @@ class Downloader:
             )
             return _RootDownloadResult(
                 downloads,
-                request_to_complete=request,
+                disposition=_CompleteRequest(request),
             )
 
         request = self._queue.request_download(gallery.gid, gallery.url)
@@ -351,7 +434,7 @@ class Downloader:
             )
         return _RootDownloadResult(
             gb,
-            request_to_complete=request if downloaded else None,
+            disposition=(_CompleteRequest(request) if downloaded else _KEEP_REQUEST),
         )
 
     async def _download_related_galleries(
@@ -429,7 +512,7 @@ class Downloader:
         skip_check: bool,
     ) -> _RootDownloadResult:
         if not self._queue.is_current(request):
-            return _RootDownloadResult({}, request_to_complete=None)
+            return _RootDownloadResult({}, disposition=_KEEP_REQUEST)
 
         if not request.url:
             return await self._resolve_and_download(
@@ -446,7 +529,7 @@ class Downloader:
             skip_check,
             request=request,
         )
-        if direct_outcome.request_to_complete is not None:
+        if isinstance(direct_outcome.disposition, _CompleteRequest):
             return direct_outcome
 
         # Downloading straight from a URL cannot identify a removed or
@@ -462,12 +545,19 @@ class Downloader:
                 direct_outcome.downloads,
                 fallback_outcome.downloads,
             ),
-            request_to_complete=fallback_outcome.request_to_complete,
+            disposition=fallback_outcome.disposition,
         )
 
     def _complete_direct_request(self, outcome: _RootDownloadResult) -> None:
-        if outcome.request_to_complete is not None:
-            self._queue.complete_download_request(outcome.request_to_complete)
+        match outcome.disposition:
+            case _KeepRequest():
+                return
+            case _CompleteRequest(request):
+                self._queue.complete_download_request(request)
+            case _ConfirmMissing(request, gid):
+                self._queue.complete_missing_download_request(request, gid)
+            case _:
+                assert_never(outcome.disposition)
 
     async def _claim_download_turn(self) -> DownloadTurn:
         while True:
@@ -556,17 +646,27 @@ class Downloader:
         turn = await self._claim_download_turn()
         try:
             result = await self._run_with_turn_heartbeat(turn, operation)
-        except BaseException:
-            self._queue.request_gallery_ingest(turn)
+        except BaseException as error:
+            if not self._queue.request_gallery_ingest(turn):
+                raise DownloadTurnLostError(
+                    f"download turn generation {turn.generation} was lost "
+                    "while handing off a failed root"
+                ) from error
             raise
 
-        if result.request_to_complete is None:
-            handed_off = self._queue.request_gallery_ingest(turn)
-        else:
-            handed_off = self._queue.finish_download_turn(
-                turn,
-                result.request_to_complete,
-            )
+        match result.disposition:
+            case _KeepRequest():
+                handed_off = self._queue.request_gallery_ingest(turn)
+            case _CompleteRequest(request):
+                handed_off = self._queue.finish_download_turn(turn, request)
+            case _ConfirmMissing(request, gid):
+                handed_off = self._queue.finish_missing_download_turn(
+                    turn,
+                    request,
+                    gid,
+                )
+            case _:
+                assert_never(result.disposition)
 
         if not handed_off:
             raise DownloadTurnLostError(

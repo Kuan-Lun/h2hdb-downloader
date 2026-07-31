@@ -73,6 +73,21 @@ class _DownloadTurnCoordinator(Protocol):
         self, turn: DownloadTurn, request: DownloadRequest
     ) -> bool: ...
 
+    def finish_missing_download_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+        gid: int,
+    ) -> bool: ...
+
+    def complete_missing_download_request(
+        self,
+        request: DownloadRequest,
+        gid: int,
+    ) -> None: ...
+
+    def clear_removed_gallery_gid(self, gid: int) -> None: ...
+
     def get_gallery_ingest_state(self) -> _GalleryIngestState: ...
 
 
@@ -242,6 +257,20 @@ class GalleryQueue:
         with self._database_operation() as connector:
             connector.complete_download_request(request)
 
+    def complete_missing_download_request(
+        self,
+        request: DownloadRequest,
+        gid: int,
+    ) -> None:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            coordinator.complete_missing_download_request(request, gid)
+
+    def clear_removed_gallery_gid(self, gid: int) -> None:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            coordinator.clear_removed_gallery_gid(gid)
+
     def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None:
         with self._database_operation() as connector:
             coordinator = cast(_DownloadTurnCoordinator, connector)
@@ -266,6 +295,16 @@ class GalleryQueue:
         with self._database_operation() as connector:
             coordinator = cast(_DownloadTurnCoordinator, connector)
             return coordinator.finish_download_turn(turn, request)
+
+    def finish_missing_download_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+        gid: int,
+    ) -> bool:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            return coordinator.finish_missing_download_turn(turn, request, gid)
 
     def completed_gallery_ingest_generation(self) -> int:
         with self._database_operation() as connector:

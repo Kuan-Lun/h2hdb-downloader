@@ -35,6 +35,19 @@ exception, or cancellation calls `request_gallery_ingest(turn)` without
 deleting the root. These are short calls through `_database_operation()`; never
 hold `database_gate()` or a transaction across a network await.
 
+GID resolution consumes hbrowser's typed `lookup_gid()` result. Only
+`ConfirmedGalleryMissing` may create a removed marker; an empty, malformed,
+challenge, authentication, navigation, pagination, or bounded-search failure
+must raise and keep the durable request. A direct confirmed-missing lookup calls
+`complete_missing_download_request(request, gid)`. A coordinated one calls
+`finish_missing_download_turn(turn, request, gid)`, which fences the turn,
+records the handoff, and—only if that exact request token remains
+current—inserts the removed marker and deletes the request in one transaction.
+A newer token fences both missing mutations while the valid turn still hands
+off. A successful `GalleryFound` result clears stale removed markers for the
+requested and resolved GIDs before downloading. Once any handoff for a turn has
+already committed, later finish calls are mutation-free idempotent replays.
+
 Another h2hdb process may hold SQLite's exclusive lock during `VACUUM`. Only
 `_claim_download_turn()` and `_wait_for_gallery_ingest()` are liveness polling
 boundaries: catch `sqlite3.OperationalError` there and retry only when the
@@ -55,6 +68,11 @@ later `drain_queue()` can repeat the root traversal. Related galleries may use
 their own requests normally. A queued URL's gid-search fallback belongs to the
 same root turn. Keep coordinated public wrappers separate from internal
 traversal helpers so a cascade never attempts to claim a nested turn.
+
+Every exceptional root attempts `request_gallery_ingest(turn)`. If that
+conditional handoff returns `False`, raise `DownloadTurnLostError` and preserve
+the original exception as `__cause__`; never re-raise the original as though
+handoff succeeded.
 
 `download_by_gallery()`, `download_by_gid()`, and `download_by_tag()` are
 intentionally direct APIs: they neither claim a download turn nor wait for
