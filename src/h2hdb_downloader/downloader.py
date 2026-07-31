@@ -2,12 +2,11 @@ import asyncio
 import os
 import sqlite3
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, field
 from math import isfinite
 from random import random
 from types import TracebackType
-from typing import Protocol, Self, assert_never
+from typing import Protocol, Self, TypeVar, assert_never
 
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import DownloadRequest, load_config
@@ -22,6 +21,8 @@ from hbrowser import (
 from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
 from ._queue import DownloadTurn, GalleryQueue
+
+_T = TypeVar("_T")
 
 
 def _is_retryable_sqlite_lock_error(error: sqlite3.OperationalError) -> bool:
@@ -82,6 +83,26 @@ _KEEP_REQUEST = _KeepRequest()
 class _RootDownloadResult:
     downloads: dict[int, bool]
     disposition: _RootDisposition
+    processed: bool = True
+
+
+@dataclass(slots=True)
+class _DownloadBatchContext:
+    """Submissions remembered across every batch in one drain snapshot."""
+
+    submitted_gids: set[int] = field(default_factory=set)
+
+    def was_submitted(self, gid: int) -> bool:
+        return gid in self.submitted_gids
+
+    def note_submission(self, gid: int) -> None:
+        self.submitted_gids.add(gid)
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchDownloadResult:
+    downloads: dict[int, bool]
+    next_snapshot_index: int
 
 
 class DownloadTurnLostError(RuntimeError):
@@ -142,6 +163,7 @@ class Downloader:
         turn_poll_seconds: float = 5,
         turn_lease_seconds: int = 300,
         turn_heartbeat_seconds: float = 60,
+        download_roots_per_ingest: int = 10,
     ) -> None:
         if not isfinite(turn_poll_seconds) or turn_poll_seconds <= 0:
             raise ValueError("turn_poll_seconds must be finite and greater than zero")
@@ -159,6 +181,12 @@ class Downloader:
             raise ValueError(
                 "turn_heartbeat_seconds must be shorter than turn_lease_seconds"
             )
+        if (
+            isinstance(download_roots_per_ingest, bool)
+            or not isinstance(download_roots_per_ingest, int)
+            or download_roots_per_ingest <= 0
+        ):
+            raise ValueError("download_roots_per_ingest must be a positive integer")
 
         self.driver = driver
         self.wait4client = wait4client
@@ -166,6 +194,7 @@ class Downloader:
         self.turn_poll_seconds = turn_poll_seconds
         self.turn_lease_seconds = turn_lease_seconds
         self.turn_heartbeat_seconds = turn_heartbeat_seconds
+        self.download_roots_per_ingest = download_roots_per_ingest
         config = load_config(config_path)
         self._queue = GalleryQueue(config=config, csv_path=csv_path)
 
@@ -192,13 +221,27 @@ class Downloader:
         return await self._download_by_gallery(target)
 
     async def _download_by_gallery(
-        self, target: GalleryURLParser | Iterable[GalleryURLParser]
+        self,
+        target: GalleryURLParser | Iterable[GalleryURLParser],
+        *,
+        batch_context: _DownloadBatchContext | None = None,
+        preserve_existing_request: bool = False,
     ) -> dict[int, bool]:
         if isinstance(target, GalleryURLParser):
-            return {target.gid: await self._download_one(target)}
+            return {
+                target.gid: await self._download_one(
+                    target,
+                    batch_context=batch_context,
+                    preserve_existing_request=preserve_existing_request,
+                )
+            }
         gb = dict[int, bool]()
         for gallery in target:
-            gb[gallery.gid] = await self._download_one(gallery)
+            gb[gallery.gid] = await self._download_one(
+                gallery,
+                batch_context=batch_context,
+                preserve_existing_request=preserve_existing_request,
+            )
         return gb
 
     async def _download_one(
@@ -207,6 +250,8 @@ class Downloader:
         request: DownloadRequest | None = None,
         *,
         complete_on_success: bool = True,
+        batch_context: _DownloadBatchContext | None = None,
+        preserve_existing_request: bool = False,
     ) -> bool:
         async def raise_after_wait(wait_seconds: int, error: Exception) -> None:
             if wait_seconds > 0:
@@ -214,11 +259,26 @@ class Downloader:
             else:
                 raise error
 
+        if batch_context is not None and batch_context.was_submitted(gallery.gid):
+            return False
+
+        should_complete_request = complete_on_success
         if request is None:
             if not self._queue.should_attempt(gallery.gid):
                 self._queue.note_skip()
                 return False
-            active_request = self._queue.request_download(gallery.gid, gallery.url)
+            if preserve_existing_request:
+                ensured = self._queue.ensure_download_request(
+                    gallery.gid,
+                    gallery.url,
+                )
+                active_request = ensured.request
+                should_complete_request = complete_on_success and ensured.created
+            else:
+                active_request = self._queue.request_download(
+                    gallery.gid,
+                    gallery.url,
+                )
         else:
             active_request = request
 
@@ -226,7 +286,8 @@ class Downloader:
             return await self._attempt_download(
                 gallery,
                 active_request,
-                complete_on_success=complete_on_success,
+                complete_on_success=should_complete_request,
+                batch_context=batch_context,
             )
         except ClientOfflineException as e:
             await raise_after_wait(self.wait4client, e)
@@ -235,7 +296,8 @@ class Downloader:
             return await self._attempt_download(
                 gallery,
                 active_request,
-                complete_on_success=complete_on_success,
+                complete_on_success=should_complete_request,
+                batch_context=batch_context,
             )
         except InsufficientFundsException as e:
             await raise_after_wait(self.retry2download, e)
@@ -244,7 +306,8 @@ class Downloader:
             return await self._attempt_download(
                 gallery,
                 active_request,
-                complete_on_success=complete_on_success,
+                complete_on_success=should_complete_request,
+                batch_context=batch_context,
             )
 
     async def _attempt_download(
@@ -253,6 +316,7 @@ class Downloader:
         request: DownloadRequest,
         *,
         complete_on_success: bool,
+        batch_context: _DownloadBatchContext | None,
     ) -> bool:
         downloaded = await self.driver.download(gallery)
         if downloaded:
@@ -262,6 +326,8 @@ class Downloader:
                     connector.update_redownload_time_to_now_by_gid(gallery.gid)
                 if complete_on_success:
                     connector.complete_download_request(request)
+            if batch_context is not None:
+                batch_context.note_submission(gallery.gid)
             await asyncio.sleep(random())
             self._queue.note_download_success()
         return downloaded
@@ -285,9 +351,14 @@ class Downloader:
         policy: TagCascadePolicy | None = None,
         skip_check: bool = False,
         request: DownloadRequest,
+        batch_context: _DownloadBatchContext | None = None,
     ) -> _RootDownloadResult:
         if not self._queue.is_current(request):
-            return _RootDownloadResult({}, disposition=_KEEP_REQUEST)
+            return _RootDownloadResult(
+                {},
+                disposition=_KEEP_REQUEST,
+                processed=False,
+            )
 
         gb = dict[int, bool]()
         disposition: _RootDisposition = _KEEP_REQUEST
@@ -313,22 +384,32 @@ class Downloader:
                 if gallery.gid != gid:
                     self._queue.clear_removed_gallery_gid(gallery.gid)
                 is_redirect = gallery.gid != gid
+                was_submitted = (
+                    batch_context is not None
+                    and batch_context.was_submitted(gallery.gid)
+                )
                 downloaded = await self._download_one(
                     gallery,
                     request,
                     complete_on_success=False,
+                    batch_context=batch_context,
                 )
                 gb[gallery.gid] = downloaded
-                if is_redirect and gb[gallery.gid]:
+                root_completed = downloaded or was_submitted
+                if is_redirect and root_completed:
                     with self._queue._database_operation() as connector:
                         if connector.gallery_gids.check_gid_by_gid(gid):
                             connector.request_gallery_deletion(gid)
-                if policy is not None and (downloaded or skip_check):
+                if policy is not None and (root_completed or skip_check):
                     gb = _merge_results(
                         gb,
-                        await self._download_related_galleries(gallery, policy),
+                        await self._download_related_galleries(
+                            gallery,
+                            policy,
+                            batch_context=batch_context,
+                        ),
                     )
-                if downloaded:
+                if root_completed:
                     disposition = _CompleteRequest(request)
             case _:
                 assert_never(lookup)
@@ -344,7 +425,12 @@ class Downloader:
         return await self._download_by_tag(tag, conditions)
 
     async def _download_by_tag(
-        self, tag: Tag, conditions: Sequence[str]
+        self,
+        tag: Tag,
+        conditions: Sequence[str],
+        *,
+        batch_context: _DownloadBatchContext | None = None,
+        preserve_existing_request: bool = False,
     ) -> dict[int, bool]:
         gb = dict[int, bool]()
         searches = conditions or [""]
@@ -357,7 +443,11 @@ class Downloader:
             )
             gb = _merge_results(
                 gb,
-                await self._download_by_gallery(result.galleries),
+                await self._download_by_gallery(
+                    result.galleries,
+                    batch_context=batch_context,
+                    preserve_existing_request=preserve_existing_request,
+                ),
             )
         return gb
 
@@ -420,34 +510,54 @@ class Downloader:
         skip_check: bool,
         *,
         request: DownloadRequest,
+        batch_context: _DownloadBatchContext | None = None,
     ) -> _RootDownloadResult:
+        was_submitted = batch_context is not None and batch_context.was_submitted(
+            gallery.gid
+        )
         downloaded = await self._download_one(
             gallery,
             request,
             complete_on_success=False,
+            batch_context=batch_context,
         )
         gb = {gallery.gid: downloaded}
-        if downloaded or skip_check:
+        root_completed = downloaded or was_submitted
+        if root_completed or skip_check:
             gb = _merge_results(
                 gb,
-                await self._download_related_galleries(gallery, policy),
+                await self._download_related_galleries(
+                    gallery,
+                    policy,
+                    batch_context=batch_context,
+                ),
             )
         return _RootDownloadResult(
             gb,
-            disposition=(_CompleteRequest(request) if downloaded else _KEEP_REQUEST),
+            disposition=(
+                _CompleteRequest(request) if root_completed else _KEEP_REQUEST
+            ),
         )
 
     async def _download_related_galleries(
         self,
         gallery: GalleryURLParser,
         policy: TagCascadePolicy,
+        *,
+        batch_context: _DownloadBatchContext | None = None,
     ) -> dict[int, bool]:
         gb = dict[int, bool]()
         for filter in policy.filters:
             taglist = await self.driver.gallery2tag(gallery, filter=filter)
             for tag in taglist:
                 gb = _merge_results(
-                    gb, await self._download_by_tag(tag, policy.conditions)
+                    gb,
+                    await self._download_by_tag(
+                        tag,
+                        policy.conditions,
+                        batch_context=batch_context,
+                        preserve_existing_request=True,
+                    ),
                 )
         return gb
 
@@ -487,22 +597,32 @@ class Downloader:
     async def drain_queue(
         self, policy: TagCascadePolicy, skip_check: bool = True
     ) -> dict[int, bool]:
-        """Process one live snapshot, handing off after every root request."""
+        """Process one snapshot in bounded batches separated by ingest barriers."""
+
         gb = dict[int, bool]()
-        for request in self._queue.download_requests():
-            if not self._queue.is_current(request):
-                continue
-            gb = _merge_results(
-                gb,
-                await self._run_coordinated_root(
-                    partial(
-                        self._drain_root_request,
-                        request,
-                        policy,
-                        skip_check,
-                    )
-                ),
+        snapshot = self._queue.download_requests()
+        snapshot_index = 0
+        batch_context = _DownloadBatchContext()
+        while snapshot_index < len(snapshot):
+            # Claim lazily: an empty snapshot, or one whose tokens have all
+            # become stale, must not trigger a pointless full ingest scan.
+            while snapshot_index < len(snapshot):
+                request = snapshot[snapshot_index]
+                if self._queue.is_current(request):
+                    break
+                snapshot_index += 1
+            if snapshot_index == len(snapshot):
+                break
+
+            batch_result = await self._run_coordinated_batch(
+                snapshot,
+                snapshot_index,
+                policy,
+                skip_check,
+                batch_context,
             )
+            snapshot_index = batch_result.next_snapshot_index
+            gb = _merge_results(gb, batch_result.downloads)
         return gb
 
     async def _drain_root_request(
@@ -510,9 +630,10 @@ class Downloader:
         request: DownloadRequest,
         policy: TagCascadePolicy,
         skip_check: bool,
-    ) -> _RootDownloadResult:
+        batch_context: _DownloadBatchContext,
+    ) -> _RootDownloadResult | None:
         if not self._queue.is_current(request):
-            return _RootDownloadResult({}, disposition=_KEEP_REQUEST)
+            return None
 
         if not request.url:
             return await self._resolve_and_download(
@@ -520,6 +641,7 @@ class Downloader:
                 policy=policy,
                 skip_check=skip_check,
                 request=request,
+                batch_context=batch_context,
             )
 
         gallery = GalleryURLParser(url=request.url)
@@ -528,6 +650,7 @@ class Downloader:
             policy,
             skip_check,
             request=request,
+            batch_context=batch_context,
         )
         if isinstance(direct_outcome.disposition, _CompleteRequest):
             return direct_outcome
@@ -539,6 +662,7 @@ class Downloader:
             policy=policy,
             skip_check=skip_check,
             request=request,
+            batch_context=batch_context,
         )
         return _RootDownloadResult(
             _merge_results(
@@ -597,12 +721,10 @@ class Downloader:
     async def _run_with_turn_heartbeat(
         self,
         turn: DownloadTurn,
-        operation: Callable[[], Awaitable[_RootDownloadResult]],
-    ) -> _RootDownloadResult:
+        operation: Callable[[], Awaitable[_T]],
+    ) -> _T:
         stop = asyncio.Event()
-        operation_task: asyncio.Future[_RootDownloadResult] = asyncio.ensure_future(
-            operation()
-        )
+        operation_task: asyncio.Future[_T] = asyncio.ensure_future(operation())
         heartbeat_task: asyncio.Task[None] = asyncio.create_task(
             self._heartbeat_download_turn(turn, stop)
         )
@@ -638,6 +760,107 @@ class Downloader:
                 if completed_generation >= turn.generation:
                     return
             await asyncio.sleep(self.turn_poll_seconds)
+
+    def _complete_root_in_turn(
+        self,
+        turn: DownloadTurn,
+        disposition: _RootDisposition,
+    ) -> None:
+        match disposition:
+            case _KeepRequest():
+                return
+            case _CompleteRequest(request):
+                completed = self._queue.complete_download_request_in_turn(
+                    turn,
+                    request,
+                )
+            case _ConfirmMissing(request, gid):
+                completed = self._queue.complete_missing_download_request_in_turn(
+                    turn,
+                    request,
+                    gid,
+                )
+            case _:
+                assert_never(disposition)
+
+        if not completed:
+            raise DownloadTurnLostError(
+                f"download turn generation {turn.generation} was lost "
+                "while settling a batch root"
+            )
+
+    async def _run_batch_roots(
+        self,
+        turn: DownloadTurn,
+        snapshot: Sequence[DownloadRequest],
+        snapshot_index: int,
+        policy: TagCascadePolicy,
+        skip_check: bool,
+        batch_context: _DownloadBatchContext,
+    ) -> _BatchDownloadResult:
+        downloads = dict[int, bool]()
+        processed_roots = 0
+        while (
+            snapshot_index < len(snapshot)
+            and processed_roots < self.download_roots_per_ingest
+        ):
+            request = snapshot[snapshot_index]
+            snapshot_index += 1
+            if not self._queue.is_current(request):
+                continue
+
+            outcome = await self._drain_root_request(
+                request,
+                policy,
+                skip_check,
+                batch_context,
+            )
+            if outcome is None or not outcome.processed:
+                continue
+            processed_roots += 1
+            downloads = _merge_results(downloads, outcome.downloads)
+            # This synchronous fenced write is deliberately adjacent to the
+            # normal traversal return. A later exception or process shutdown
+            # cannot make an already-finished root depend on the rest of the
+            # batch completing.
+            self._complete_root_in_turn(turn, outcome.disposition)
+        return _BatchDownloadResult(downloads, snapshot_index)
+
+    async def _run_coordinated_batch(
+        self,
+        snapshot: Sequence[DownloadRequest],
+        snapshot_index: int,
+        policy: TagCascadePolicy,
+        skip_check: bool,
+        batch_context: _DownloadBatchContext,
+    ) -> _BatchDownloadResult:
+        turn = await self._claim_download_turn()
+        try:
+            downloads = await self._run_with_turn_heartbeat(
+                turn,
+                lambda: self._run_batch_roots(
+                    turn,
+                    snapshot,
+                    snapshot_index,
+                    policy,
+                    skip_check,
+                    batch_context,
+                ),
+            )
+        except BaseException as error:
+            if not self._queue.request_gallery_ingest(turn):
+                raise DownloadTurnLostError(
+                    f"download turn generation {turn.generation} was lost "
+                    "while handing off an interrupted batch"
+                ) from error
+            raise
+
+        if not self._queue.request_gallery_ingest(turn):
+            raise DownloadTurnLostError(
+                f"download turn generation {turn.generation} was lost before handoff"
+            )
+        await self._wait_for_gallery_ingest(turn)
+        return downloads
 
     async def _run_coordinated_root(
         self,

@@ -31,6 +31,12 @@ class FakeGalleryIngestState:
     completed_generation: int
 
 
+@dataclass(frozen=True, slots=True)
+class FakeEnsureDownloadRequestResult:
+    request: DownloadRequest
+    created: bool
+
+
 @dataclass
 class FakeDBStore:
     """In-memory stand-in for the parts of the h2hdb schema this package touches."""
@@ -66,7 +72,14 @@ class FakeDBStore:
     finished_missing_download_turns: list[
         tuple[FakeDownloadTurn, DownloadRequest, int]
     ] = field(default_factory=list)
+    completed_download_requests_in_turn: list[
+        tuple[FakeDownloadTurn, DownloadRequest]
+    ] = field(default_factory=list)
+    completed_missing_download_requests_in_turn: list[
+        tuple[FakeDownloadTurn, DownloadRequest, int]
+    ] = field(default_factory=list)
     finish_download_turn_observer: Callable[[], None] | None = None
+    complete_download_request_in_turn_observer: Callable[[], None] | None = None
     accepted_gallery_ingest_turns: set[FakeDownloadTurn] = field(default_factory=set)
     gallery_ingest_state_reads: int = 0
 
@@ -171,6 +184,33 @@ class FakeConnector:
         self.store.download_requests[gid] = request
         return request
 
+    def ensure_download_request(
+        self,
+        gid: int,
+        url: str = "",
+    ) -> FakeEnsureDownloadRequestResult:
+        self.store.assert_database_gate()
+        if self.store.request_download_error is not None:
+            raise self.store.request_download_error
+        if self.store.request_download_observer is not None:
+            self.store.request_download_observer()
+        if url:
+            parsed_gid = GalleryURLParser(url=url).gid
+            if gid not in (0, parsed_gid):
+                raise ValueError
+            gid = parsed_gid
+        if gid <= 0:
+            raise ValueError
+
+        existing = self.store.download_requests.get(gid)
+        if existing is not None:
+            return FakeEnsureDownloadRequestResult(existing, created=False)
+
+        request = DownloadRequest(gid, url, f"token-{self.store.next_request_token}")
+        self.store.next_request_token += 1
+        self.store.download_requests[gid] = request
+        return FakeEnsureDownloadRequestResult(request, created=True)
+
     def complete_download_request(self, request: DownloadRequest) -> None:
         self.store.assert_database_gate()
         current = self.store.download_requests.get(request.gid)
@@ -241,6 +281,48 @@ class FakeConnector:
         self.store.handed_off_turn = turn
         if self.store.auto_complete_gallery_ingest:
             self.store.complete_gallery_ingest()
+        return True
+
+    def complete_download_request_in_turn(
+        self,
+        turn: FakeDownloadTurn,
+        request: DownloadRequest,
+    ) -> bool:
+        self.store.assert_database_gate()
+        self.store.completed_download_requests_in_turn.append((turn, request))
+        if self.store.complete_download_request_in_turn_observer is not None:
+            self.store.complete_download_request_in_turn_observer()
+        if (
+            self.store.active_download_turn != turn
+            or self.store.handed_off_turn is not None
+        ):
+            return False
+
+        current = self.store.download_requests.get(request.gid)
+        if current is not None and current.token == request.token:
+            self.store.download_requests.pop(request.gid)
+        return True
+
+    def complete_missing_download_request_in_turn(
+        self,
+        turn: FakeDownloadTurn,
+        request: DownloadRequest,
+        gid: int,
+    ) -> bool:
+        self.store.assert_database_gate()
+        self.store.completed_missing_download_requests_in_turn.append(
+            (turn, request, gid)
+        )
+        if (
+            self.store.active_download_turn != turn
+            or self.store.handed_off_turn is not None
+        ):
+            return False
+
+        current = self.store.download_requests.get(request.gid)
+        if current is not None and current.token == request.token:
+            self.store.download_requests.pop(request.gid)
+            self.store.removed_gids.add(gid)
         return True
 
     def finish_download_turn(
@@ -430,6 +512,7 @@ def downloader_factory(
         turn_poll_seconds: float = 5,
         turn_lease_seconds: int = 300,
         turn_heartbeat_seconds: float = 60,
+        download_roots_per_ingest: int = 10,
     ) -> Downloader:
         return Downloader(
             fake_driver,
@@ -440,6 +523,7 @@ def downloader_factory(
             turn_poll_seconds=turn_poll_seconds,
             turn_lease_seconds=turn_lease_seconds,
             turn_heartbeat_seconds=turn_heartbeat_seconds,
+            download_roots_per_ingest=download_roots_per_ingest,
         )
 
     return make

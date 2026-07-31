@@ -45,6 +45,22 @@ class _DownloadRequestsReader(Protocol):
     def get_download_requests(self) -> list[DownloadRequest]: ...
 
 
+class _EnsureDownloadRequestResult(Protocol):
+    @property
+    def request(self) -> DownloadRequest: ...
+
+    @property
+    def created(self) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class EnsuredDownloadRequest:
+    """A durable request returned without replacing an existing root token."""
+
+    request: DownloadRequest
+    created: bool
+
+
 class DownloadTurn(Protocol):
     """The stable portion of h2hdb's download-turn value used here."""
 
@@ -69,6 +85,19 @@ class _DownloadTurnCoordinator(Protocol):
 
     def request_gallery_ingest(self, turn: DownloadTurn) -> bool: ...
 
+    def complete_download_request_in_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+    ) -> bool: ...
+
+    def complete_missing_download_request_in_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+        gid: int,
+    ) -> bool: ...
+
     def finish_download_turn(
         self, turn: DownloadTurn, request: DownloadRequest
     ) -> bool: ...
@@ -89,6 +118,14 @@ class _DownloadTurnCoordinator(Protocol):
     def clear_removed_gallery_gid(self, gid: int) -> None: ...
 
     def get_gallery_ingest_state(self) -> _GalleryIngestState: ...
+
+
+class _DownloadRequestEnsurer(Protocol):
+    def ensure_download_request(
+        self,
+        gid: int,
+        url: str = "",
+    ) -> _EnsureDownloadRequestResult: ...
 
 
 def parse_todownload_csv_rows(rows: list[list[str]]) -> list[ManualDownloadRequest]:
@@ -253,6 +290,18 @@ class GalleryQueue:
         with self._database_operation() as connector:
             return connector.request_download(gid, url)
 
+    def ensure_download_request(
+        self,
+        gid: int,
+        url: str = "",
+    ) -> EnsuredDownloadRequest:
+        """Create a request only when no request for ``gid`` already exists."""
+
+        with self._database_operation() as connector:
+            ensurer = cast(_DownloadRequestEnsurer, connector)
+            result = ensurer.ensure_download_request(gid, url)
+        return EnsuredDownloadRequest(result.request, result.created)
+
     def complete_download_request(self, request: DownloadRequest) -> None:
         with self._database_operation() as connector:
             connector.complete_download_request(request)
@@ -288,6 +337,29 @@ class GalleryQueue:
         with self._database_operation() as connector:
             coordinator = cast(_DownloadTurnCoordinator, connector)
             return coordinator.request_gallery_ingest(turn)
+
+    def complete_download_request_in_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+    ) -> bool:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            return coordinator.complete_download_request_in_turn(turn, request)
+
+    def complete_missing_download_request_in_turn(
+        self,
+        turn: DownloadTurn,
+        request: DownloadRequest,
+        gid: int,
+    ) -> bool:
+        with self._database_operation() as connector:
+            coordinator = cast(_DownloadTurnCoordinator, connector)
+            return coordinator.complete_missing_download_request_in_turn(
+                turn,
+                request,
+                gid,
+            )
 
     def finish_download_turn(
         self, turn: DownloadTurn, request: DownloadRequest

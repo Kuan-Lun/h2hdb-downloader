@@ -74,6 +74,43 @@ def force_new_sqlite_connections_not_to_wait(
     monkeypatch.setattr(SQLiteConnector, "connect", connect_without_wait)
 
 
+def test_batch_queue_wrappers_use_real_sqlite_transactions(
+    sqlite_coordination_config: H2HDBConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    downloader = make_downloader(sqlite_coordination_config, monkeypatch)
+    existing = downloader._queue.request_download(1)
+
+    ensured_existing = downloader._queue.ensure_download_request(
+        1,
+        "https://exhentai.org/g/1/abcdef0123/",
+    )
+    ensured_missing = downloader._queue.ensure_download_request(404)
+    turn = downloader._queue.claim_download_turn(lease_seconds=60)
+    assert turn is not None
+
+    assert not ensured_existing.created
+    assert ensured_existing.request.token == existing.token
+    assert ensured_existing.request.url == "https://exhentai.org/g/1/abcdef0123/"
+    assert ensured_missing.created
+    assert downloader._queue.complete_download_request_in_turn(
+        turn,
+        ensured_existing.request,
+    )
+    assert downloader._queue.complete_missing_download_request_in_turn(
+        turn,
+        ensured_missing.request,
+        404,
+    )
+
+    with H2HDB(config=sqlite_coordination_config) as database:
+        assert database.get_download_request(1) is None
+        assert database.get_download_request(404) is None
+        assert database.removed_galleries._check_removed_gallery_gid(404)
+
+    assert downloader._queue.request_gallery_ingest(turn)
+
+
 @pytest.mark.parametrize("primary_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED])
 def test_extended_sqlite_lock_codes_use_their_primary_code(
     primary_code: int,

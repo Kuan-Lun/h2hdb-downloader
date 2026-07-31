@@ -22,31 +22,35 @@ Keep browser/network awaits, retry sleeps, and tag traversal outside that
 context. A timeout is one wait interval, not a terminal failure; h2hdb logs it
 and continues waiting.
 
-Public `deep_download_by_gallery()` and `deep_download_by_gid()` calls are
-download/ingest coordination roots. `drain_queue()` gives every root request in
-its live snapshot a separate turn. Before network work, a root repeatedly calls
-`claim_download_turn()` until h2hdb reports that downloading is ready. It
-renews the lease in an asynchronous heartbeat, requests gallery ingest on every
-exit, and waits for `completed_generation >= turn.generation` before beginning
-another root after a normal return. A normally resolved root must call
-`finish_download_turn(turn, request)`, which atomically performs the explicit
-handoff and exact-token request deletion. An unresolved normal return,
-exception, or cancellation calls `request_gallery_ingest(turn)` without
-deleting the root. These are short calls through `_database_operation()`; never
-hold `database_gate()` or a transaction across a network await.
+Public `deep_download_by_gallery()` and `deep_download_by_gid()` calls remain
+single-root download/ingest coordination turns. `drain_queue()` instead groups
+up to `download_roots_per_ingest` returned root traversals from one live
+snapshot into a bounded turn. Before network work, it repeatedly calls
+`claim_download_turn()` until h2hdb reports `READY`, then keeps one asynchronous
+heartbeat alive across the entire root or batch. Between batch roots,
+`complete_download_request_in_turn()` and
+`complete_missing_download_request_in_turn()` persist exact-token results while
+retaining `DOWNLOADING`; `_KeepRequest` remains queued. The batch calls
+`request_gallery_ingest()` once at the root-count boundary or snapshot
+exhaustion and waits for `completed_generation >= turn.generation` before the
+next batch. Single-root methods retain `finish_download_turn()` and
+`finish_missing_download_turn()` so their final request mutation and handoff
+share one transaction. These are short calls through `_database_operation()`;
+never hold `database_gate()` or a transaction across a network await.
 
 GID resolution consumes hbrowser's typed `lookup_gid()` result. Only
 `ConfirmedGalleryMissing` may create a removed marker; an empty, malformed,
 challenge, authentication, navigation, pagination, or bounded-search failure
 must raise and keep the durable request. A direct confirmed-missing lookup calls
 `complete_missing_download_request(request, gid)`. A coordinated one calls
-`finish_missing_download_turn(turn, request, gid)`, which fences the turn,
-records the handoff, and—only if that exact request token remains
-current—inserts the removed marker and deletes the request in one transaction.
-A newer token fences both missing mutations while the valid turn still hands
-off. A successful `GalleryFound` result clears stale removed markers for the
-requested and resolved GIDs before downloading. Once any handoff for a turn has
-already committed, later finish calls are mutation-free idempotent replays.
+the single-root `finish_missing_download_turn(...)` or batched
+`complete_missing_download_request_in_turn(...)`. Both fence the turn and write
+the removed marker only when exact-token deletion succeeds; the batch variant
+keeps `DOWNLOADING` for more roots, while the finish variant also hands off. A
+newer token fences both missing mutations. A successful `GalleryFound` result
+clears stale removed markers for the requested and resolved GIDs before
+downloading. Once any handoff for a turn has already committed, later finish
+calls are mutation-free idempotent replays.
 
 Another h2hdb process may hold SQLite's exclusive lock during `VACUUM`. Only
 `_claim_download_turn()` and `_wait_for_gallery_ingest()` are liveness polling
@@ -58,21 +62,38 @@ mutation, browser work, other SQLite errors, or MariaDB exceptions.
 
 The root `DownloadRequest` is completed conditionally only after the root
 gallery is resolved and its full related-tag cascade returns successfully.
-Do not complete it before handoff: only the atomic finish operation may delete
-it. A stale or expired worker's failed finish therefore leaves the root queued.
-If the turn is valid but the root token was replaced or is already absent,
-finish still hands off successfully and treats exact-token deletion as a no-op;
-it must never remove the newer request.
-Keep it queued if the cascade raises, is cancelled, or the process exits, so a
-later `drain_queue()` can repeat the root traversal. Related galleries may use
-their own requests normally. A queued URL's gid-search fallback belongs to the
-same root turn. Keep coordinated public wrappers separate from internal
-traversal helpers so a cascade never attempts to claim a nested turn.
+Single-root calls delete it in the atomic finish operation; batch roots use the
+live-turn-fenced in-turn completion immediately after traversal returns. A stale
+or expired worker therefore cannot delete the root. If its token was replaced
+or is already absent, exact completion is a no-op and must never remove the
+newer request. Keep the request queued if the cascade raises, is cancelled, or
+the process exits before the traversal returns.
 
-Every exceptional root attempts `request_gallery_ingest(turn)`. If that
-conditional handoff returns `False`, raise `DownloadTurnLostError` and preserve
-the original exception as `__cause__`; never re-raise the original as though
-handoff succeeded.
+Related downloads must call `ensure_download_request()` so an existing snapshot
+root token is reused rather than replaced. Only a request newly created by that
+related download may be completed immediately. One `_DownloadBatchContext`
+spans the complete `drain_queue()` snapshot: it suppresses duplicate submission
+of a GID across overlapping cascades and later batches, while a later queued
+root still runs its own cascade before its exact token is completed. A queued
+URL's gid-search fallback belongs to the same root traversal. Keep coordinated
+public wrappers separate from internal traversal helpers so a cascade never
+attempts to claim a nested turn.
+
+Every exceptional root or batch attempts `request_gallery_ingest(turn)`. If
+that conditional handoff returns `False`, raise `DownloadTurnLostError` and
+preserve the original exception as `__cause__`; never re-raise the original as
+though handoff succeeded. Cancellation follows the same path without swallowing
+`CancelledError`. SIGTERM, SIGKILL, simultaneous service shutdown, or database
+unavailability may prevent the explicit handoff; the durable downloader lease
+then expires and h2hdb must recover `DOWNLOADING` before returning to `READY`.
+Each completed root is independently committed, the interrupted root remains
+queued, and the process-local batch counter may be discarded on restart.
+
+H@H submission is an uncontrollable external side effect. There is necessarily
+a crash window after `driver.download()` accepts work and before the root's
+database checkpoint commits. A restart may submit that GID again, so this
+boundary is at-least-once, not exactly-once; durable request and ingest state
+must remain correct without attempting to infer H@H's internal state.
 
 `download_by_gallery()`, `download_by_gid()`, and `download_by_tag()` are
 intentionally direct APIs: they neither claim a download turn nor wait for

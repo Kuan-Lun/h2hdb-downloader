@@ -222,6 +222,31 @@ def test_request_download_returns_token_and_completion_is_conditional(
     assert fake_store.download_requests == {}
 
 
+def test_ensure_download_request_preserves_an_existing_token(
+    queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
+) -> None:
+    queue = queue_factory()
+    existing = queue.request_download(
+        1,
+        "https://exhentai.org/g/1/abcdef0123/",
+    )
+
+    preserved = queue.ensure_download_request(
+        1,
+        "https://exhentai.org/g/1/abcdef0124/",
+    )
+    created = queue.ensure_download_request(
+        2,
+        "https://exhentai.org/g/2/abcdef0123/",
+    )
+
+    assert not preserved.created
+    assert preserved.request == existing
+    assert fake_store.download_requests[1] == existing
+    assert created.created
+    assert created.request == fake_store.download_requests[2]
+
+
 def test_database_operations_use_the_five_minute_maintenance_gate(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
@@ -279,6 +304,33 @@ def test_finish_download_turn_atomically_hands_off_and_completes_exact_request(
     assert fake_store.completed_ingest_generation == turn.generation
     assert fake_store.database_gate_timeouts == [300] * 3
     assert fake_store.connector_exit_gate_depths == [1] * 3
+
+
+def test_requests_can_settle_inside_a_live_turn_before_one_batch_handoff(
+    queue_factory: Callable[..., GalleryQueue],
+    fake_store: FakeDBStore,
+) -> None:
+    queue = queue_factory()
+    completed_request = queue.request_download(1)
+    missing_request = queue.request_download(404)
+    turn = queue.claim_download_turn(lease_seconds=300)
+    assert turn is not None
+
+    assert queue.complete_download_request_in_turn(turn, completed_request)
+    assert queue.complete_missing_download_request_in_turn(
+        turn,
+        missing_request,
+        404,
+    )
+
+    assert fake_store.download_requests == {}
+    assert fake_store.removed_gids == {404}
+    assert fake_store.handed_off_turn is None
+    assert fake_store.active_download_turn == turn
+
+    assert turn is not None
+    assert queue.request_gallery_ingest(turn)
+    assert fake_store.completed_ingest_generation == turn.generation
 
 
 def test_stale_download_turn_cannot_renew_or_handoff(
