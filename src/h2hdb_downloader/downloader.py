@@ -23,6 +23,7 @@ from hbrowser.exceptions import ClientOfflineException, InsufficientFundsExcepti
 from ._queue import DownloadTurn, GalleryQueue
 
 _T = TypeVar("_T")
+_BatchItemT = TypeVar("_BatchItemT")
 
 
 def _is_retryable_sqlite_lock_error(error: sqlite3.OperationalError) -> bool:
@@ -88,7 +89,7 @@ class _RootDownloadResult:
 
 @dataclass(slots=True)
 class _DownloadBatchContext:
-    """Submissions remembered across every batch in one drain snapshot."""
+    """Submissions remembered across every turn in one public batch drain."""
 
     submitted_gids: set[int] = field(default_factory=set)
 
@@ -163,7 +164,7 @@ class Downloader:
         turn_poll_seconds: float = 5,
         turn_lease_seconds: int = 300,
         turn_heartbeat_seconds: float = 60,
-        download_roots_per_ingest: int = 10,
+        download_submissions_per_ingest: int = 100,
     ) -> None:
         if not isfinite(turn_poll_seconds) or turn_poll_seconds <= 0:
             raise ValueError("turn_poll_seconds must be finite and greater than zero")
@@ -182,11 +183,13 @@ class Downloader:
                 "turn_heartbeat_seconds must be shorter than turn_lease_seconds"
             )
         if (
-            isinstance(download_roots_per_ingest, bool)
-            or not isinstance(download_roots_per_ingest, int)
-            or download_roots_per_ingest <= 0
+            isinstance(download_submissions_per_ingest, bool)
+            or not isinstance(download_submissions_per_ingest, int)
+            or download_submissions_per_ingest <= 0
         ):
-            raise ValueError("download_roots_per_ingest must be a positive integer")
+            raise ValueError(
+                "download_submissions_per_ingest must be a positive integer"
+            )
 
         self.driver = driver
         self.wait4client = wait4client
@@ -194,7 +197,7 @@ class Downloader:
         self.turn_poll_seconds = turn_poll_seconds
         self.turn_lease_seconds = turn_lease_seconds
         self.turn_heartbeat_seconds = turn_heartbeat_seconds
-        self.download_roots_per_ingest = download_roots_per_ingest
+        self.download_submissions_per_ingest = download_submissions_per_ingest
         config = load_config(config_path)
         self._queue = GalleryQueue(config=config, csv_path=csv_path)
 
@@ -597,18 +600,86 @@ class Downloader:
     async def drain_queue(
         self, policy: TagCascadePolicy, skip_check: bool = True
     ) -> dict[int, bool]:
-        """Process one snapshot in bounded batches separated by ingest barriers."""
+        """Drain one durable-request snapshot with submission-count barriers."""
+
+        snapshot = self._queue.download_requests()
+        return await self._drain_batched_snapshot(
+            snapshot,
+            is_current=self._queue.is_current,
+            run_root=lambda request, batch_context: self._drain_root_request(
+                request,
+                policy,
+                skip_check,
+                batch_context,
+            ),
+        )
+
+    async def drain_pending_redownloads(
+        self,
+        policy: TagCascadePolicy,
+        skip_check: bool = True,
+    ) -> dict[int, bool]:
+        """Drain one pending-redownload snapshot with the same ingest barriers."""
+
+        # Publish every snapshot root before network work. If this process is
+        # interrupted while seeding, the already-created exact-token requests
+        # are recoverable through drain_queue(), while unseeded gids remain in
+        # the pending-redownload view. Related downloads must therefore reuse,
+        # rather than complete, a later pending root's durable request.
+        snapshot = [
+            self._queue.ensure_download_request(gid).request
+            for gid in self._queue.pending_redownload_gids()
+        ]
+        return await self._drain_batched_snapshot(
+            snapshot,
+            is_current=self._queue.is_current,
+            run_root=lambda request, batch_context: self._drain_pending_redownload_root(
+                request,
+                policy,
+                skip_check,
+                batch_context,
+            ),
+        )
+
+    async def _drain_pending_redownload_root(
+        self,
+        request: DownloadRequest,
+        policy: TagCascadePolicy,
+        skip_check: bool,
+        batch_context: _DownloadBatchContext,
+    ) -> _RootDownloadResult | None:
+        if not self._queue.is_current(request):
+            return None
+
+        return await self._resolve_and_download(
+            request.gid,
+            policy=policy,
+            skip_check=skip_check,
+            request=request,
+            batch_context=batch_context,
+        )
+
+    async def _drain_batched_snapshot(
+        self,
+        snapshot: Sequence[_BatchItemT],
+        *,
+        is_current: Callable[[_BatchItemT], bool],
+        run_root: Callable[
+            [_BatchItemT, _DownloadBatchContext],
+            Awaitable[_RootDownloadResult | None],
+        ],
+    ) -> dict[int, bool]:
+        """Run indivisible roots up to a soft accepted-submission threshold."""
 
         gb = dict[int, bool]()
-        snapshot = self._queue.download_requests()
         snapshot_index = 0
         batch_context = _DownloadBatchContext()
         while snapshot_index < len(snapshot):
             # Claim lazily: an empty snapshot, or one whose tokens have all
             # become stale, must not trigger a pointless full ingest scan.
             while snapshot_index < len(snapshot):
-                request = snapshot[snapshot_index]
-                if self._queue.is_current(request):
+                item = snapshot[snapshot_index]
+                if is_current(item):
                     break
                 snapshot_index += 1
             if snapshot_index == len(snapshot):
@@ -617,9 +688,9 @@ class Downloader:
             batch_result = await self._run_coordinated_batch(
                 snapshot,
                 snapshot_index,
-                policy,
-                skip_check,
                 batch_context,
+                is_current,
+                run_root,
             )
             snapshot_index = batch_result.next_snapshot_index
             gb = _merge_results(gb, batch_result.downloads)
@@ -792,47 +863,49 @@ class Downloader:
     async def _run_batch_roots(
         self,
         turn: DownloadTurn,
-        snapshot: Sequence[DownloadRequest],
+        snapshot: Sequence[_BatchItemT],
         snapshot_index: int,
-        policy: TagCascadePolicy,
-        skip_check: bool,
         batch_context: _DownloadBatchContext,
+        is_current: Callable[[_BatchItemT], bool],
+        run_root: Callable[
+            [_BatchItemT, _DownloadBatchContext],
+            Awaitable[_RootDownloadResult | None],
+        ],
     ) -> _BatchDownloadResult:
         downloads = dict[int, bool]()
-        processed_roots = 0
-        while (
-            snapshot_index < len(snapshot)
-            and processed_roots < self.download_roots_per_ingest
-        ):
-            request = snapshot[snapshot_index]
+        submissions_at_batch_start = len(batch_context.submitted_gids)
+        while snapshot_index < len(snapshot):
+            item = snapshot[snapshot_index]
             snapshot_index += 1
-            if not self._queue.is_current(request):
+            if not is_current(item):
                 continue
 
-            outcome = await self._drain_root_request(
-                request,
-                policy,
-                skip_check,
-                batch_context,
-            )
+            outcome = await run_root(item, batch_context)
             if outcome is None or not outcome.processed:
                 continue
-            processed_roots += 1
             downloads = _merge_results(downloads, outcome.downloads)
             # This synchronous fenced write is deliberately adjacent to the
             # normal traversal return. A later exception or process shutdown
             # cannot make an already-finished root depend on the rest of the
             # batch completing.
             self._complete_root_in_turn(turn, outcome.disposition)
+            accepted_unique_submissions = (
+                len(batch_context.submitted_gids) - submissions_at_batch_start
+            )
+            if accepted_unique_submissions >= self.download_submissions_per_ingest:
+                break
         return _BatchDownloadResult(downloads, snapshot_index)
 
     async def _run_coordinated_batch(
         self,
-        snapshot: Sequence[DownloadRequest],
+        snapshot: Sequence[_BatchItemT],
         snapshot_index: int,
-        policy: TagCascadePolicy,
-        skip_check: bool,
         batch_context: _DownloadBatchContext,
+        is_current: Callable[[_BatchItemT], bool],
+        run_root: Callable[
+            [_BatchItemT, _DownloadBatchContext],
+            Awaitable[_RootDownloadResult | None],
+        ],
     ) -> _BatchDownloadResult:
         turn = await self._claim_download_turn()
         try:
@@ -842,9 +915,9 @@ class Downloader:
                     turn,
                     snapshot,
                     snapshot_index,
-                    policy,
-                    skip_check,
                     batch_context,
+                    is_current,
+                    run_root,
                 ),
             )
         except BaseException as error:

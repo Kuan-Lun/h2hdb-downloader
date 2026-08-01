@@ -25,6 +25,14 @@ the browser session and the overall process lifecycle.
   have actually disappeared. For a deep root job, success means that the
   root gallery has resolved and its entire related-tag cascade has returned
   successfully; the root request remains queued throughout that traversal.
+  Before `drain_pending_redownloads()` performs any browser or network work, it
+  walks its entire pending snapshot and calls `ensure_download_request()` for
+  every GID, turning each item into a durable tokenized root request. If the
+  process stops during this seeding pass, already seeded roots are recoverable
+  through the durable queue and unseeded roots remain in the pending-redownload
+  view. Pre-seeding also means an earlier root's cascade reuses, rather than
+  completes, the token belonging to a later pending root; that later root still
+  runs its own cascade before its token is settled.
   A public single-root call performs exact-token deletion and the
   download-to-ingest handoff in one transaction. A `drain_queue()` batch
   instead checkpoints each returned root through its still-live turn, then
@@ -42,23 +50,27 @@ the browser session and the overall process lifecycle.
   Browser search, downloads, retry sleeps, and tag traversal stay outside the
   gate, so maintenance is never blocked by network work.
 - **Ingest backpressure** — each public deep-download root still owns one h2hdb
-  download turn, while `drain_queue()` groups up to
-  `download_roots_per_ingest` complete queue roots into one turn and one ingest
-  barrier. A heartbeat spans the entire root or batch. Between batch roots,
-  successful and confirmed-missing dispositions are persisted through the live
-  turn fence without releasing `DOWNLOADING`; unresolved roots stay queued. The
-  batch hands off once at its configured root boundary or snapshot exhaustion.
-  Failures and cancellation also attempt one immediate handoff without removing
-  the interrupted root. If the process or container is killed before it can do
-  so, lease expiry lets h2hdb recover and scan already published files. Each
-  completed root is a durable checkpoint, so restarting resets only the
-  process-local batch count, not correctness. Related downloads atomically reuse
-  an existing request token instead of replacing a later snapshot root, and one
-  drain snapshot remembers submitted GIDs so overlapping cascades do not submit
-  them twice before ingest. This coordination uses only short database calls;
-  browser work never holds a transaction or maintenance gate. SQLite may retry
-  `BUSY` or `LOCKED` only at the ready-turn claim and completed-generation
-  polling boundaries.
+  download turn, while `drain_queue()` and `drain_pending_redownloads()` group
+  complete roots until at least `download_submissions_per_ingest` unique H@H
+  submissions have been accepted. This is a soft threshold checked only after
+  an indivisible root and its entire related-tag cascade return: if consecutive
+  roots submit 10, 11, and 103 galleries with a threshold of 100, all three
+  finish and the batch hands off with 124 submissions. A root that produces no
+  accepted submission does not advance the threshold. A heartbeat spans the
+  entire root or batch. Between batch roots, successful and confirmed-missing
+  dispositions are persisted through the live turn fence without releasing
+  `DOWNLOADING`; unresolved roots stay queued. The batch also hands off at
+  snapshot exhaustion. Failures and cancellation attempt one immediate handoff
+  without removing the interrupted root. If the process or container is killed
+  before it can do so, lease expiry lets h2hdb recover and scan already
+  published files. Each completed root is a durable checkpoint, so restarting
+  discards only the process-local submission count, not correctness. Related
+  downloads atomically reuse an existing request token instead of replacing a
+  later snapshot root, and one drain snapshot remembers accepted GIDs so
+  overlapping cascades neither resubmit nor recount them before ingest. This
+  coordination uses only short database calls; browser work never holds a
+  transaction or maintenance gate. SQLite may retry `BUSY` or `LOCKED` only at
+  the ready-turn claim and completed-generation polling boundaries.
 - **External submission semantics** — H@H is treated as an uncontrollable
   external downloader. If it accepts a submission and this process stops before
   the corresponding database checkpoint commits, the next run may submit that
@@ -94,7 +106,7 @@ Downloader(
     turn_poll_seconds: float = 5,       # wait interval for a turn / ingest completion
     turn_lease_seconds: int = 300,      # recoverable ownership lease
     turn_heartbeat_seconds: float = 60, # renewal interval; shorter than the lease
-    download_roots_per_ingest: int = 10, # queue roots per drain_queue ingest
+    download_submissions_per_ingest: int = 100, # accepted unique submissions
 )
 ```
 
@@ -105,10 +117,11 @@ database requests and live deduplication still work.
 The turn timing defaults normally need no adjustment. All three timing values
 must be positive and finite, `turn_lease_seconds` must be an integer, and the
 heartbeat interval must be shorter than the lease.
-`download_roots_per_ingest` must be a positive integer. It counts queue roots
-whose traversal returned, regardless of whether the disposition was completed,
-missing, or retained; it does not measure H@H processing time or materialized
-gallery folders.
+`download_submissions_per_ingest` must be a positive integer. It counts unique
+GIDs for which `driver.download()` returned `True` during the current batch; it
+does not measure H@H processing time or materialized gallery folders. The
+threshold is soft because a root and its cascade are never split. Roots with no
+accepted submission do not advance it.
 
 Coordinated methods raise `DownloadTurnLostError` if their lease can no longer
 be renewed or the conditional handoff proves that another process owns the
@@ -168,22 +181,30 @@ thing.
 - `await drain_queue(policy, skip_check=True)` — absorb the manual CSV and
   process one live snapshot of durable database requests. A request is
   removed only after a successful root and complete related-tag cascade,
-  confirmed removal, or successful redirect. Up to
-  `download_roots_per_ingest` returned root traversals share one download turn,
-  heartbeat, handoff, and h2hdb ingest wait. A URL-to-gid fallback remains part
-  of its root traversal. Stale snapshot tokens are skipped without consuming
-  the root limit, and the method does not loop for newly queued work after its
-  snapshot.
+  confirmed removal, or successful redirect. Complete roots share one download
+  turn, heartbeat, handoff, and h2hdb ingest wait until their accepted unique
+  H@H submissions reach the soft `download_submissions_per_ingest` threshold.
+  A URL-to-gid fallback remains part of its root traversal. Stale snapshot
+  tokens are skipped without claiming a turn, and the method does not loop for
+  newly queued work after its snapshot.
+- `await drain_pending_redownloads(policy, skip_check=True)` — process one live
+  snapshot of GIDs h2hdb flags for periodic redownload. It first seeds every
+  snapshot GID as a durable tokenized request, before any browser/network work,
+  then uses the same submission-count batching, indivisible-root semantics,
+  durable checkpoints, and final ingest barrier as `drain_queue()`. An
+  interrupted seed pass leaves seeded GIDs in the durable queue and unseeded
+  GIDs pending. Newly flagged GIDs wait for the next call.
 - `pending_redownload_gids()` — a snapshot list of gids h2hdb currently
   flags as needing a periodic redownload. Every call reads live database
-  state; read-only and safe to call repeatedly as you work through it.
+  state; read-only and safe to call repeatedly. Prefer
+  `drain_pending_redownloads()` when processing the whole snapshot so it can
+  share ingest barriers across roots.
 
 ## Example
 
-The calling application owns the loop. A typical one drains the queue once,
-then walks the pending-redownload list, deep-downloading anything that actually
-got (re)downloaded. The queue drain applies bounded-batch backpressure; each
-independent deep download in the pending loop retains its single-root barrier:
+The calling application owns the loop. A typical one drains the durable queue
+once, then drains one pending-redownload snapshot. Both operations apply the
+same accepted-submission soft threshold:
 
 ```python
 import asyncio
@@ -204,6 +225,7 @@ async def main():
         csv_path="todownload_gids.csv",
         wait4client=30 * 60,
         retry2download=4 * 60 * 60,
+        download_submissions_per_ingest=100,
     ) as downloader:
         gallery = GalleryURLParser("https://exhentai.org/g/123/456/")
         await downloader.download_by_gallery(gallery)
@@ -211,8 +233,7 @@ async def main():
         await downloader.deep_download_by_gallery(gallery, policy)
 
         await downloader.drain_queue(policy, skip_check=True)
-        for gid in downloader.pending_redownload_gids():
-            await downloader.deep_download_by_gid(gid, policy, skip_check=True)
+        await downloader.drain_pending_redownloads(policy, skip_check=True)
 
 
 asyncio.run(main())

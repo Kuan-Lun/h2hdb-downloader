@@ -23,15 +23,20 @@ context. A timeout is one wait interval, not a terminal failure; h2hdb logs it
 and continues waiting.
 
 Public `deep_download_by_gallery()` and `deep_download_by_gid()` calls remain
-single-root download/ingest coordination turns. `drain_queue()` instead groups
-up to `download_roots_per_ingest` returned root traversals from one live
-snapshot into a bounded turn. Before network work, it repeatedly calls
-`claim_download_turn()` until h2hdb reports `READY`, then keeps one asynchronous
-heartbeat alive across the entire root or batch. Between batch roots,
+single-root download/ingest coordination turns. `drain_queue()` and
+`drain_pending_redownloads()` instead group complete root traversals from one
+live snapshot until at least `download_submissions_per_ingest` unique H@H
+submissions have been accepted. This is a soft threshold checked only after an
+indivisible root and its complete related-tag cascade return; a zero-submission
+root does not advance it, and a single root may carry the batch past it. Before
+network work, each drain repeatedly calls `claim_download_turn()` until h2hdb
+reports `READY`, then keeps one asynchronous heartbeat alive across the entire
+root or batch. `download_submissions_per_ingest` is a positive integer and
+defaults to 100. Between batch roots,
 `complete_download_request_in_turn()` and
 `complete_missing_download_request_in_turn()` persist exact-token results while
 retaining `DOWNLOADING`; `_KeepRequest` remains queued. The batch calls
-`request_gallery_ingest()` once at the root-count boundary or snapshot
+`request_gallery_ingest()` once at the submission-count boundary or snapshot
 exhaustion and waits for `completed_generation >= turn.generation` before the
 next batch. Single-root methods retain `finish_download_turn()` and
 `finish_missing_download_turn()` so their final request mutation and handoff
@@ -71,10 +76,22 @@ the process exits before the traversal returns.
 
 Related downloads must call `ensure_download_request()` so an existing snapshot
 root token is reused rather than replaced. Only a request newly created by that
-related download may be completed immediately. One `_DownloadBatchContext`
-spans the complete `drain_queue()` snapshot: it suppresses duplicate submission
-of a GID across overlapping cascades and later batches, while a later queued
-root still runs its own cascade before its exact token is completed. A queued
+related download may be completed immediately. Before
+`drain_pending_redownloads()` starts any browser or network work, it must walk
+the complete pending snapshot and call `ensure_download_request()` for every
+GID. Keep the returned tokenized requests as the roots processed by that drain;
+do not re-read or replace their tokens later. If seeding is interrupted, roots
+already ensured are recoverable from the durable queue, while roots not yet
+ensured remain in the pending-redownload view. This pre-seeding also fences an
+earlier root's related cascade: when it reaches a later pending GID,
+`ensure_download_request()` finds that root's token and the related-download
+path must not complete it. The later root therefore still executes its own
+cascade before exact-token completion. One `_DownloadBatchContext`
+spans the complete snapshot handled by either drain method: it suppresses
+duplicate submission and counting of a GID across overlapping cascades and
+later batches, while a later queued root still runs its own cascade before its
+exact token is completed. The submission counter advances only when
+`driver.download()` returns `True` for a previously uncounted GID. A queued
 URL's gid-search fallback belongs to the same root traversal. Keep coordinated
 public wrappers separate from internal traversal helpers so a cascade never
 attempts to claim a nested turn.
@@ -87,7 +104,11 @@ though handoff succeeded. Cancellation follows the same path without swallowing
 unavailability may prevent the explicit handoff; the durable downloader lease
 then expires and h2hdb must recover `DOWNLOADING` before returning to `READY`.
 Each completed root is independently committed, the interrupted root remains
-queued, and the process-local batch counter may be discarded on restart.
+queued, and the process-local accepted-submission counter may be discarded on
+restart. Snapshot exhaustion performs a final handoff even when the soft
+threshold was not reached; an empty or entirely stale queue snapshot must not
+claim a turn. `drain_pending_redownloads()` likewise snapshots once, so work
+flagged during that call waits for the next call.
 
 H@H submission is an uncontrollable external side effect. There is necessarily
 a crash window after `driver.download()` accepts work and before the root's
@@ -98,7 +119,7 @@ must remain correct without attempting to infer H@H's internal state.
 `download_by_gallery()`, `download_by_gid()`, and `download_by_tag()` are
 intentionally direct APIs: they neither claim a download turn nor wait for
 h2hdb ingest. Callers that require backpressure must use a deep method or
-`drain_queue()`.
+one of the two drain methods.
 
 ## Communication
 

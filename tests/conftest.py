@@ -395,6 +395,7 @@ class FakeDriver:
         self.search_results: dict[tuple[str, str], tuple[GalleryURLParser, ...]] = {}
         self.search_observer: Callable[[SearchRequest], None] | None = None
         self.tag_results: dict[str, list[Tag]] = {}
+        self.gallery_tag_results: dict[tuple[int, str], list[Tag]] = {}
 
     async def __aenter__(self) -> Self:
         return self
@@ -443,6 +444,9 @@ class FakeDriver:
     async def gallery2tag(self, gallery: GalleryURLParser, filter: str) -> list[Tag]:
         assert self.store.database_gate_depth == 0
         self.gallery2tag_calls.append((gallery, filter))
+        gallery_result = self.gallery_tag_results.get((gallery.gid, filter))
+        if gallery_result is not None:
+            return gallery_result
         return self.tag_results.get(filter, [])
 
 
@@ -512,7 +516,7 @@ def downloader_factory(
         turn_poll_seconds: float = 5,
         turn_lease_seconds: int = 300,
         turn_heartbeat_seconds: float = 60,
-        download_roots_per_ingest: int = 10,
+        download_submissions_per_ingest: int = 100,
     ) -> Downloader:
         return Downloader(
             fake_driver,
@@ -523,7 +527,7 @@ def downloader_factory(
             turn_poll_seconds=turn_poll_seconds,
             turn_lease_seconds=turn_lease_seconds,
             turn_heartbeat_seconds=turn_heartbeat_seconds,
-            download_roots_per_ingest=download_roots_per_ingest,
+            download_submissions_per_ingest=download_submissions_per_ingest,
         )
 
     return make
