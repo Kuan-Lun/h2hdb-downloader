@@ -132,8 +132,11 @@ one of the two drain methods.
 # Install dependencies
 uv pip install -e .
 
-# Type checking (strict mode configured in mypy.ini)
-uv run mypy src/h2hdb_downloader tests
+# Run the full Python finalizer over all project Python files
+bash scripts/hooks/finalize-python.sh
+
+# Run the full Markdown finalizer over all project Markdown files
+bash scripts/hooks/finalize-markdown.sh
 
 # Linting with ruff (rules in pyproject.toml: E, F, I, UP)
 uv run ruff check .
@@ -181,8 +184,9 @@ Follow SOLID principles when writing code:
     [scripts/hooks/finalize-markdown.sh](scripts/hooks/finalize-markdown.sh),
     called by both Claude and Codex.
   - Claude registers the shared scripts in
-    [.claude/settings.local.json](.claude/settings.local.json); Codex's
-    [.Codex/hooks](.Codex/hooks) wrappers forward to those same scripts.
+    [.claude/settings.local.json](.claude/settings.local.json). Codex follows
+    [AGENTS.md](AGENTS.md), and the [.Codex/hooks](.Codex/hooks) wrappers
+    forward to those same scripts.
   - Tool versions: the `dev` group of `[project.optional-dependencies]` in
     [pyproject.toml](pyproject.toml) pins `black`, `ruff`, `mypy`, and
     `pymarkdownlnt`. Both the IDE pipeline (when invoked via `uv run`) and the

@@ -23,10 +23,24 @@
 set -eu
 trap 'exit 2' ERR
 
-# Tests are included so the shared hook covers diagnostics reported on test files.
-PATHS=(src/h2hdb_downloader tests)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
 
-uv run black "${PATHS[@]}" >&2
-uv run ruff check --fix "${PATHS[@]}" >&2
-uv run black "${PATHS[@]}" >&2
-uv run mypy "${PATHS[@]}" >&2
+PY_FILES=()
+while IFS= read -r -d '' file; do
+    if [[ -f "$file" ]]; then
+        PY_FILES+=("$file")
+    fi
+done < <(
+    git ls-files --cached --others --exclude-standard -z -- '*.py' '*.pyi'
+)
+
+if [[ ${#PY_FILES[@]} -eq 0 ]]; then
+    exit 0
+fi
+
+uv run black "${PY_FILES[@]}" >&2
+uv run ruff check --fix "${PY_FILES[@]}" >&2
+uv run black "${PY_FILES[@]}" >&2
+uv run mypy "${PY_FILES[@]}" >&2
