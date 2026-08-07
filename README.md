@@ -45,10 +45,10 @@ the browser session and the overall process lifecycle.
   the single-root form includes the handoff in that transaction, while the
   batch form retains `DOWNLOADING` until the boundary. A newer request fences
   both missing mutations.
-- **Database coordination** — every short h2hdb read/write section enters
-  h2hdb's cross-process maintenance gate with a five-minute wait interval.
-  Browser search, downloads, retry sleeps, and tag traversal stay outside the
-  gate, so maintenance is never blocked by network work.
+- **Core boundary** — the caller injects h2hdb's public `DownloadCoordinator`.
+  This package never opens a connector, reaches into a repository, migrates the
+  schema, or manages the database gate. Browser search, downloads, retry sleeps,
+  and tag traversal remain outside the coordinator's short synchronous calls.
 - **Ingest backpressure** — each public deep-download root still owns one h2hdb
   download turn, while `drain_queue()` and `drain_pending_redownloads()` group
   complete roots until at least `download_submissions_per_ingest` unique H@H
@@ -68,9 +68,10 @@ the browser session and the overall process lifecycle.
   downloads atomically reuse an existing request token instead of replacing a
   later snapshot root, and one drain snapshot remembers accepted GIDs so
   overlapping cascades neither resubmit nor recount them before ingest. This
-  coordination uses only short database calls; browser work never holds a
-  transaction or maintenance gate. SQLite may retry `BUSY` or `LOCKED` only at
-  the ready-turn claim and completed-generation polling boundaries.
+  coordination uses only short core calls; browser work never holds a database
+  transaction. Backend-neutral temporary unavailability is retried only at the
+  ready-turn claim and completed-generation polling boundaries; backend lock
+  handling remains inside h2hdb core.
 - **External submission semantics** — H@H is treated as an uncontrollable
   external downloader. If it accepts a submission and this process stops before
   the corresponding database checkpoint commits, the next run may submit that
@@ -80,7 +81,10 @@ the browser session and the overall process lifecycle.
   `csv_path`. It is converted into the same durable request and picked up
   the next time the queue is drained. Before replay, the inbox is atomically
   rotated to a same-directory hidden claim file; interrupted claims are
-  replayed automatically on the next run.
+  replayed automatically on the next run. A blank GID is derived from the URL
+  with `GalleryURLParser` before the request reaches core. When both fields are
+  present, the URL must identify the same GID; malformed or mismatched rows are
+  rejected before their claim is acknowledged.
 - **Deep download** — download a gallery, then look at its `artist`/`group`
   tags and download sibling galleries that match a set of search conditions
   (e.g. other-language releases of the same work).
@@ -98,7 +102,7 @@ application's job, not the library's.
 ```python
 Downloader(
     driver: ExHDriver,         # an un-entered driver; see below
-    config_path: str,          # path to the h2hdb JSON config
+    coordinator: DownloadCoordinator, # initialized public h2hdb port
     csv_path: str | None = None,  # path to the manual download-queue CSV
     *,
     wait4client: int,       # seconds to wait before retrying after ClientOfflineException
@@ -109,6 +113,10 @@ Downloader(
     download_submissions_per_ingest: int = 100, # accepted unique submissions
 )
 ```
+
+The application owns core configuration and startup. Inject a compatible
+`DownloadCoordinator`; downloader never runs schema migrations. The concrete
+core factory performs the consumer compatibility check.
 
 `csv_path` only enables the optional "queue a gid/url by editing a CSV file"
 feature described above. Leave it as `None` if you don't need that; durable
@@ -186,7 +194,9 @@ thing.
   H@H submissions reach the soft `download_submissions_per_ingest` threshold.
   A URL-to-gid fallback remains part of its root traversal. Stale snapshot
   tokens are skipped without claiming a turn, and the method does not loop for
-  newly queued work after its snapshot.
+  newly queued work after its snapshot. If a malformed or mismatched URL is
+  encountered despite the write-boundary validation, it is ignored and the
+  original requested GID is resolved safely.
 - `await drain_pending_redownloads(policy, skip_check=True)` — process one live
   snapshot of GIDs h2hdb flags for periodic redownload. It first seeds every
   snapshot GID as a durable tokenized request, before any browser/network work,
@@ -209,6 +219,7 @@ same accepted-submission soft threshold:
 ```python
 import asyncio
 from h2hdb_downloader import Downloader, TagCascadePolicy
+from h2hdb import load_config, open_database
 from hbrowser import ExHDriver
 from h2h_galleryinfo_parser import GalleryURLParser
 
@@ -219,9 +230,10 @@ policy = TagCascadePolicy(
 
 
 async def main():
+    coordinator = open_database(load_config("h2hdb-config.json"))
     async with Downloader(
         ExHDriver(headless=True),
-        config_path="h2hdb-config.json",
+        coordinator=coordinator,
         csv_path="todownload_gids.csv",
         wait4client=30 * 60,
         retry2download=4 * 60 * 60,

@@ -1,3 +1,5 @@
+import pytest
+
 from h2hdb_downloader._queue import (
     ManualDownloadRequest,
     parse_todownload_csv_rows,
@@ -6,12 +8,17 @@ from h2hdb_downloader._queue import (
 )
 
 
-def test_parse_todownload_csv_rows_blank_gid_becomes_zero() -> None:
+def test_parse_todownload_csv_rows_blank_gid_is_derived_from_url() -> None:
     rows = [["", "https://exhentai.org/g/1/abc/"], ["42", ""]]
     assert parse_todownload_csv_rows(rows) == [
-        ManualDownloadRequest(0, "https://exhentai.org/g/1/abc/"),
+        ManualDownloadRequest(1, "https://exhentai.org/g/1/abc/"),
         ManualDownloadRequest(42, ""),
     ]
+
+
+def test_parse_todownload_csv_rows_rejects_mismatched_gid_and_url() -> None:
+    with pytest.raises(ValueError, match="42 does not match URL GID 1"):
+        parse_todownload_csv_rows([["42", "https://exhentai.org/g/1/abc/"]])
 
 
 def test_should_attempt_download_skips_settled_gid() -> None:

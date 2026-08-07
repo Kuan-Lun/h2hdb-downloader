@@ -16,11 +16,12 @@ The package has exactly three public exports
 `DownloadTurnLostError`, all defined in
 `src/h2hdb_downloader/downloader.py`.
 
-All h2hdb access must go through `GalleryQueue._database_operation()`, which
-holds h2hdb's cross-process maintenance gate with `timeout_seconds=300`.
-Keep browser/network awaits, retry sleeps, and tag traversal outside that
-context. A timeout is one wait interval, not a terminal failure; h2hdb logs it
-and continues waiting.
+`Downloader` receives h2hdb's public `DownloadCoordinator` port from its caller;
+`GalleryQueue` delegates every durable request, candidate-state, submission,
+deletion, and turn operation to that port. This package must not construct the
+core facade, load core configuration, manage `database_gate()`, import a SQL
+backend, or reach into a connector or repository. Keep browser/network awaits,
+retry sleeps, and tag traversal outside the coordinator's synchronous calls.
 
 Public `deep_download_by_gallery()` and `deep_download_by_gid()` calls remain
 single-root download/ingest coordination turns. `drain_queue()` and
@@ -40,8 +41,8 @@ retaining `DOWNLOADING`; `_KeepRequest` remains queued. The batch calls
 exhaustion and waits for `completed_generation >= turn.generation` before the
 next batch. Single-root methods retain `finish_download_turn()` and
 `finish_missing_download_turn()` so their final request mutation and handoff
-share one transaction. These are short calls through `_database_operation()`;
-never hold `database_gate()` or a transaction across a network await.
+share one core transaction. These are short `DownloadCoordinator` calls; never
+place a browser or network await inside one.
 
 GID resolution consumes hbrowser's typed `lookup_gid()` result. Only
 `ConfirmedGalleryMissing` may create a removed marker; an empty, malformed,
@@ -57,13 +58,11 @@ clears stale removed markers for the requested and resolved GIDs before
 downloading. Once any handoff for a turn has already committed, later finish
 calls are mutation-free idempotent replays.
 
-Another h2hdb process may hold SQLite's exclusive lock during `VACUUM`. Only
-`_claim_download_turn()` and `_wait_for_gallery_ingest()` are liveness polling
-boundaries: catch `sqlite3.OperationalError` there and retry only when the
-primary `sqlite_errorcode` (the extended code masked with `0xFF`) is
-`SQLITE_BUSY` or `SQLITE_LOCKED`. Sleep for `turn_poll_seconds` before retrying.
-Do not apply this policy to heartbeat renewal, handoff, atomic finish, queue
-mutation, browser work, other SQLite errors, or MariaDB exceptions.
+Only `_claim_download_turn()` and `_wait_for_gallery_ingest()` are liveness
+polling boundaries. Retry the backend-neutral `CoordinatorUnavailableError`
+there after `turn_poll_seconds`. Backend lock detection and database-gate policy
+belong to h2hdb core. Do not apply this retry policy to heartbeat renewal,
+handoff, atomic finish, queue mutation, browser work, or unrelated exceptions.
 
 The root `DownloadRequest` is completed conditionally only after the root
 gallery is resolved and its full related-tag cascade returns successfully.
@@ -121,6 +120,11 @@ intentionally direct APIs: they neither claim a download turn nor wait for
 h2hdb ingest. Callers that require backpressure must use a deep method or
 one of the two drain methods.
 
+The optional manual CSV queue is a downloader-owned filesystem adapter. When a
+row leaves its GID blank, parse the URL with `GalleryURLParser` and pass the
+normalized positive GID to core; URL parsing is not a `DownloadCoordinator`
+responsibility.
+
 ## Communication
 
 - Claude 必須以繁體中文回答所有對話內容，不論使用者以何種語言提問；
@@ -129,8 +133,9 @@ one of the two drain methods.
 ## Build & Development Commands
 
 ```bash
-# Install dependencies
-uv pip install -e .
+# Install the unpublished multi-repo core, then this package
+uv pip install -e ../h2hdb.clone
+uv pip install -e ".[dev]"
 
 # Run the full Python finalizer over all project Python files
 bash scripts/hooks/finalize-python.sh
@@ -139,10 +144,10 @@ bash scripts/hooks/finalize-python.sh
 bash scripts/hooks/finalize-markdown.sh
 
 # Linting with ruff (rules in pyproject.toml: E, F, I, UP)
-uv run ruff check .
+uv run --no-sync ruff check .
 
 # Formatting with black (88 char line length)
-uv run black .
+uv run --no-sync black .
 ```
 
 ## Coding Guidelines
@@ -189,7 +194,8 @@ Follow SOLID principles when writing code:
     forward to those same scripts.
   - Tool versions: the `dev` group of `[project.optional-dependencies]` in
     [pyproject.toml](pyproject.toml) pins `black`, `ruff`, `mypy`, and
-    `pymarkdownlnt`. Both the IDE pipeline (when invoked via `uv run`) and the
+    `pymarkdownlnt`. Both the IDE pipeline (when invoked via
+    `uv run --no-sync`) and the
     Stop hooks resolve to these venv-installed versions, so bumping any of them
     must be done here — not via Homebrew or any other system-wide install.
 

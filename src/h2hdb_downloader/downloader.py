@@ -1,6 +1,6 @@
 import asyncio
+import logging
 import os
-import sqlite3
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from math import isfinite
@@ -9,7 +9,12 @@ from types import TracebackType
 from typing import Protocol, Self, TypeVar, assert_never
 
 from h2h_galleryinfo_parser import GalleryURLParser
-from h2hdb import DownloadRequest, load_config
+from h2hdb import (
+    CoordinatorUnavailableError,
+    DownloadCoordinator,
+    DownloadRequest,
+    DownloadTurn,
+)
 from hbrowser import (
     ConfirmedGalleryMissing,
     GalleryFound,
@@ -20,18 +25,12 @@ from hbrowser import (
 )
 from hbrowser.exceptions import ClientOfflineException, InsufficientFundsException
 
-from ._queue import DownloadTurn, GalleryQueue
+from ._queue import GalleryQueue
 
 _T = TypeVar("_T")
 _BatchItemT = TypeVar("_BatchItemT")
 
-
-def _is_retryable_sqlite_lock_error(error: sqlite3.OperationalError) -> bool:
-    error_code = getattr(error, "sqlite_errorcode", None)
-    if not isinstance(error_code, int):
-        return False
-    primary_code = error_code & 0xFF
-    return primary_code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+logger = logging.getLogger(__name__)
 
 
 def _merge_results(dict1: dict[int, bool], dict2: dict[int, bool]) -> dict[int, bool]:
@@ -140,6 +139,8 @@ class Downloader:
     request queue internally (see ``_queue.GalleryQueue``). A request is
     completed only after its download succeeds or its gid is conclusively
     removed/redirected, so an interrupted or failed attempt remains resumable.
+    ``coordinator`` is an initialized, schema-compatible h2hdb public port; its
+    configuration and migrations remain the calling application's concern.
     ``csv_path`` is optional: it only enables the manual "queue a gid/url by
     editing a CSV file" feature — leave it as ``None`` if you don't need that.
 
@@ -156,7 +157,7 @@ class Downloader:
     def __init__(
         self,
         driver: GalleryDriver,
-        config_path: str,
+        coordinator: DownloadCoordinator,
         csv_path: str | os.PathLike[str] | None = None,
         *,
         wait4client: int,
@@ -198,8 +199,7 @@ class Downloader:
         self.turn_lease_seconds = turn_lease_seconds
         self.turn_heartbeat_seconds = turn_heartbeat_seconds
         self.download_submissions_per_ingest = download_submissions_per_ingest
-        config = load_config(config_path)
-        self._queue = GalleryQueue(config=config, csv_path=csv_path)
+        self._queue = GalleryQueue(coordinator=coordinator, csv_path=csv_path)
 
     async def __aenter__(self) -> Downloader:
         await self.driver.__aenter__()
@@ -323,12 +323,10 @@ class Downloader:
     ) -> bool:
         downloaded = await self.driver.download(gallery)
         if downloaded:
-            with self._queue._database_operation() as connector:
-                connector.clear_removed_gallery_gid(gallery.gid)
-                if connector.gallery_gids.check_gid_by_gid(gallery.gid):
-                    connector.update_redownload_time_to_now_by_gid(gallery.gid)
-                if complete_on_success:
-                    connector.complete_download_request(request)
+            self._queue.record_accepted_submission(
+                gallery.gid,
+                request=request if complete_on_success else None,
+            )
             if batch_context is not None:
                 batch_context.note_submission(gallery.gid)
             await asyncio.sleep(random())
@@ -383,9 +381,7 @@ class Downloader:
                 # The lookup proves both the requested route and its resolved
                 # gallery are live. Clear any stale false-missing markers even
                 # when the following download is unsuccessful.
-                self._queue.clear_removed_gallery_gid(gid)
-                if gallery.gid != gid:
-                    self._queue.clear_removed_gallery_gid(gallery.gid)
+                self._queue.record_gallery_found(gid, gallery.gid)
                 is_redirect = gallery.gid != gid
                 was_submitted = (
                     batch_context is not None
@@ -400,9 +396,8 @@ class Downloader:
                 gb[gallery.gid] = downloaded
                 root_completed = downloaded or was_submitted
                 if is_redirect and root_completed:
-                    with self._queue._database_operation() as connector:
-                        if connector.gallery_gids.check_gid_by_gid(gid):
-                            connector.request_gallery_deletion(gid)
+                    if self._queue.is_cataloged(gid):
+                        self._queue.request_gallery_deletion(gid)
                 if policy is not None and (root_completed or skip_check):
                     gb = _merge_results(
                         gb,
@@ -715,7 +710,35 @@ class Downloader:
                 batch_context=batch_context,
             )
 
-        gallery = GalleryURLParser(url=request.url)
+        try:
+            gallery = GalleryURLParser(url=request.url)
+        except ValueError:
+            logger.error(
+                "Stored download request for GID %d has an invalid URL; "
+                "ignoring the URL and resolving the requested GID",
+                request.gid,
+            )
+            return await self._resolve_and_download(
+                request.gid,
+                policy=policy,
+                skip_check=skip_check,
+                request=request,
+                batch_context=batch_context,
+            )
+        if gallery.gid != request.gid:
+            logger.error(
+                "Stored download request GID %d has a URL for GID %d; "
+                "ignoring the URL and resolving the requested GID",
+                request.gid,
+                gallery.gid,
+            )
+            return await self._resolve_and_download(
+                request.gid,
+                policy=policy,
+                skip_check=skip_check,
+                request=request,
+                batch_context=batch_context,
+            )
         direct_outcome = await self._deep_download_by_gallery(
             gallery,
             policy,
@@ -760,9 +783,7 @@ class Downloader:
                 turn = self._queue.claim_download_turn(
                     lease_seconds=self.turn_lease_seconds
                 )
-            except sqlite3.OperationalError as error:
-                if not _is_retryable_sqlite_lock_error(error):
-                    raise
+            except CoordinatorUnavailableError:
                 turn = None
             if turn is not None:
                 return turn
@@ -824,9 +845,8 @@ class Downloader:
         while True:
             try:
                 completed_generation = self._queue.completed_gallery_ingest_generation()
-            except sqlite3.OperationalError as error:
-                if not _is_retryable_sqlite_lock_error(error):
-                    raise
+            except CoordinatorUnavailableError:
+                pass
             else:
                 if completed_generation >= turn.generation:
                     return

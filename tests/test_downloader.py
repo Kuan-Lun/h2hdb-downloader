@@ -59,6 +59,11 @@ async def test_download_requests_work_before_network_and_completes_on_success(
     result = await downloader.download_by_gallery(gallery(1))
 
     assert result == {1: True}
+    assert len(fake_store.accepted_submissions) == 1
+    accepted_gid, accepted_request = fake_store.accepted_submissions[0]
+    assert accepted_gid == 1
+    assert accepted_request is not None
+    assert accepted_request.gid == 1
     assert fake_store.redownload_time_updates == [1]
     assert fake_store.download_requests == {}
 
@@ -691,6 +696,31 @@ async def test_drain_queue_url_entry_skips_fallback_when_direct_download_succeed
 
     assert result == {1: True}
     assert fake_driver.search_calls == []
+    assert fake_store.download_requests == {}
+
+
+@pytest.mark.parametrize(
+    "stored_url",
+    (gallery(1).url, "https://example.invalid/not-a-gallery"),
+)
+async def test_drain_queue_bad_stored_url_resolves_the_requested_gid(
+    stored_url: str,
+    downloader_factory: Callable[..., Downloader],
+    fake_store: FakeDBStore,
+    fake_driver: FakeDriver,
+) -> None:
+    request = DownloadRequest(42, stored_url, "request-42")
+    fake_store.download_requests = {42: request}
+    fake_driver.lookup_results[42] = GalleryFound(42, gallery(42))
+
+    downloader = downloader_factory()
+    result = await downloader.drain_queue(
+        TagCascadePolicy(filters=(), conditions=()),
+        skip_check=True,
+    )
+
+    assert result == {42: True}
+    assert gids_of(fake_driver.download_calls) == [42]
     assert fake_store.download_requests == {}
 
 

@@ -17,16 +17,19 @@ ties together:
 
 import csv
 import os
-from collections.abc import Generator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from random import random
 from time import time_ns
-from typing import Protocol, cast
 from uuid import uuid4
 
-from h2hdb import H2HDB, DownloadRequest, H2HDBConfig
+from h2h_galleryinfo_parser import GalleryURLParser
+from h2hdb import (
+    DownloadCoordinator,
+    DownloadRequest,
+    DownloadTurn,
+    EnsureDownloadRequestResult,
+)
 
 __all__: list[str] = []
 
@@ -41,103 +44,33 @@ class ManualDownloadRequest:
     url: str
 
 
-class _DownloadRequestsReader(Protocol):
-    def get_download_requests(self) -> list[DownloadRequest]: ...
+def _validate_request_identity(gid: int, url: str) -> int:
+    """Validate the provider-specific URL before it crosses into neutral core."""
 
-
-class _EnsureDownloadRequestResult(Protocol):
-    @property
-    def request(self) -> DownloadRequest: ...
-
-    @property
-    def created(self) -> bool: ...
-
-
-@dataclass(frozen=True, slots=True)
-class EnsuredDownloadRequest:
-    """A durable request returned without replacing an existing root token."""
-
-    request: DownloadRequest
-    created: bool
-
-
-class DownloadTurn(Protocol):
-    """The stable portion of h2hdb's download-turn value used here."""
-
-    @property
-    def generation(self) -> int: ...
-
-    @property
-    def owner_token(self) -> str: ...
-
-
-class _GalleryIngestState(Protocol):
-    @property
-    def completed_generation(self) -> int: ...
-
-
-class _DownloadTurnCoordinator(Protocol):
-    def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None: ...
-
-    def renew_download_turn(
-        self, turn: DownloadTurn, *, lease_seconds: int
-    ) -> bool: ...
-
-    def request_gallery_ingest(self, turn: DownloadTurn) -> bool: ...
-
-    def complete_download_request_in_turn(
-        self,
-        turn: DownloadTurn,
-        request: DownloadRequest,
-    ) -> bool: ...
-
-    def complete_missing_download_request_in_turn(
-        self,
-        turn: DownloadTurn,
-        request: DownloadRequest,
-        gid: int,
-    ) -> bool: ...
-
-    def finish_download_turn(
-        self, turn: DownloadTurn, request: DownloadRequest
-    ) -> bool: ...
-
-    def finish_missing_download_turn(
-        self,
-        turn: DownloadTurn,
-        request: DownloadRequest,
-        gid: int,
-    ) -> bool: ...
-
-    def complete_missing_download_request(
-        self,
-        request: DownloadRequest,
-        gid: int,
-    ) -> None: ...
-
-    def clear_removed_gallery_gid(self, gid: int) -> None: ...
-
-    def get_gallery_ingest_state(self) -> _GalleryIngestState: ...
-
-
-class _DownloadRequestEnsurer(Protocol):
-    def ensure_download_request(
-        self,
-        gid: int,
-        url: str = "",
-    ) -> _EnsureDownloadRequestResult: ...
+    if gid <= 0:
+        raise ValueError("Gallery GID must be greater than zero.")
+    if not url:
+        return gid
+    parsed_gid = GalleryURLParser(url).gid
+    if parsed_gid != gid:
+        raise ValueError(f"Gallery GID {gid} does not match URL GID {parsed_gid}.")
+    return gid
 
 
 def parse_todownload_csv_rows(rows: list[list[str]]) -> list[ManualDownloadRequest]:
     """Parse data rows (header already excluded) into queue entries.
 
-    A blank gid column means "only the URL is known yet"; it is recorded as
-    gid 0 and resolved later once the gallery is actually looked up.
+    A blank gid column means "derive the gid from the URL". URL parsing belongs
+    to this downloader adapter; the core coordinator only receives normalized
+    positive gids.
     """
     entries = []
     for row in rows:
-        gid = 0 if row[0] == "" else int(row[0])
-        entries.append(ManualDownloadRequest(gid, row[1]))
+        if len(row) != 2:
+            raise ValueError("Download CSV rows must contain exactly gid and url.")
+        url = row[1]
+        gid = GalleryURLParser(url).gid if row[0] == "" else int(row[0])
+        entries.append(ManualDownloadRequest(_validate_request_identity(gid, url), url))
     return entries
 
 
@@ -221,23 +154,16 @@ class GalleryQueue:
     """Mediates h2hdb's durable requests and live deduplication state."""
 
     def __init__(
-        self, config: H2HDBConfig, csv_path: str | os.PathLike[str] | None
+        self,
+        coordinator: DownloadCoordinator,
+        csv_path: str | os.PathLike[str] | None,
     ) -> None:
         """``csv_path=None`` disables the manual CSV queue."""
-        self.config = config
+        self._coordinator = coordinator
         self.csv_path = Path(csv_path) if csv_path is not None else None
         self.wocount = 0
         self.wocount_max = random_wocount_max()
         self._sync_csv_into_db()
-
-    @contextmanager
-    def _database_operation(self) -> Generator[H2HDB]:
-        """Yield h2hdb while its cross-process maintenance gate is held."""
-
-        connector = H2HDB(config=self.config)
-        with connector.database_gate(timeout_seconds=300):
-            with connector:
-                yield connector
 
     def _sync_csv_into_db(self) -> None:
         if self.csv_path is None:
@@ -260,10 +186,8 @@ class GalleryQueue:
             return True
 
         entries = read_todownload_csv(claim_path)
-        if entries:
-            with self._database_operation() as connector:
-                for entry in entries:
-                    connector.request_download(entry.gid, entry.url)
+        for entry in entries:
+            self._coordinator.request_download(entry.gid, entry.url)
 
         try:
             after = claim_path.stat()
@@ -280,72 +204,69 @@ class GalleryQueue:
         claim_path.unlink(missing_ok=True)
         return True
 
-    @staticmethod
-    def _fetch_download_requests(
-        connector: _DownloadRequestsReader,
-    ) -> list[DownloadRequest]:
-        return connector.get_download_requests()
-
     def request_download(self, gid: int, url: str = "") -> DownloadRequest:
-        with self._database_operation() as connector:
-            return connector.request_download(gid, url)
+        return self._coordinator.request_download(
+            _validate_request_identity(gid, url),
+            url,
+        )
 
     def ensure_download_request(
         self,
         gid: int,
         url: str = "",
-    ) -> EnsuredDownloadRequest:
+    ) -> EnsureDownloadRequestResult:
         """Create a request only when no request for ``gid`` already exists."""
 
-        with self._database_operation() as connector:
-            ensurer = cast(_DownloadRequestEnsurer, connector)
-            result = ensurer.ensure_download_request(gid, url)
-        return EnsuredDownloadRequest(result.request, result.created)
+        return self._coordinator.ensure_download_request(
+            _validate_request_identity(gid, url),
+            url,
+        )
 
     def complete_download_request(self, request: DownloadRequest) -> None:
-        with self._database_operation() as connector:
-            connector.complete_download_request(request)
+        self._coordinator.complete_download_request(request)
 
     def complete_missing_download_request(
         self,
         request: DownloadRequest,
         gid: int,
     ) -> None:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            coordinator.complete_missing_download_request(request, gid)
+        self._coordinator.complete_missing_download_request(request, gid)
 
-    def clear_removed_gallery_gid(self, gid: int) -> None:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            coordinator.clear_removed_gallery_gid(gid)
+    def record_gallery_found(self, *gids: int) -> None:
+        self._coordinator.record_gallery_found(*gids)
+
+    def record_accepted_submission(
+        self,
+        gid: int,
+        *,
+        request: DownloadRequest | None = None,
+    ) -> None:
+        self._coordinator.record_accepted_submission(gid, request=request)
+
+    def request_gallery_deletion(self, gid: int) -> None:
+        self._coordinator.request_gallery_deletion(gid)
+
+    def is_cataloged(self, gid: int) -> bool:
+        return self._coordinator.get_candidate_states((gid,))[gid].cataloged
 
     def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            return coordinator.claim_download_turn(lease_seconds=lease_seconds)
+        return self._coordinator.claim_download_turn(lease_seconds=lease_seconds)
 
     def renew_download_turn(self, turn: DownloadTurn, *, lease_seconds: int) -> bool:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            return coordinator.renew_download_turn(
-                turn,
-                lease_seconds=lease_seconds,
-            )
+        return self._coordinator.renew_download_turn(
+            turn,
+            lease_seconds=lease_seconds,
+        )
 
     def request_gallery_ingest(self, turn: DownloadTurn) -> bool:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            return coordinator.request_gallery_ingest(turn)
+        return self._coordinator.request_gallery_ingest(turn)
 
     def complete_download_request_in_turn(
         self,
         turn: DownloadTurn,
         request: DownloadRequest,
     ) -> bool:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            return coordinator.complete_download_request_in_turn(turn, request)
+        return self._coordinator.complete_download_request_in_turn(turn, request)
 
     def complete_missing_download_request_in_turn(
         self,
@@ -353,20 +274,16 @@ class GalleryQueue:
         request: DownloadRequest,
         gid: int,
     ) -> bool:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            return coordinator.complete_missing_download_request_in_turn(
-                turn,
-                request,
-                gid,
-            )
+        return self._coordinator.complete_missing_download_request_in_turn(
+            turn,
+            request,
+            gid,
+        )
 
     def finish_download_turn(
         self, turn: DownloadTurn, request: DownloadRequest
     ) -> bool:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            return coordinator.finish_download_turn(turn, request)
+        return self._coordinator.finish_download_turn(turn, request)
 
     def finish_missing_download_turn(
         self,
@@ -374,18 +291,13 @@ class GalleryQueue:
         request: DownloadRequest,
         gid: int,
     ) -> bool:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            return coordinator.finish_missing_download_turn(turn, request, gid)
+        return self._coordinator.finish_missing_download_turn(turn, request, gid)
 
     def completed_gallery_ingest_generation(self) -> int:
-        with self._database_operation() as connector:
-            coordinator = cast(_DownloadTurnCoordinator, connector)
-            return coordinator.get_gallery_ingest_state().completed_generation
+        return self._coordinator.get_gallery_ingest_state().completed_generation
 
     def is_current(self, request: DownloadRequest) -> bool:
-        with self._database_operation() as connector:
-            current = connector.get_download_request(request.gid)
+        current = self._coordinator.get_download_request(request.gid)
         return (
             current is not None
             and current.gid == request.gid
@@ -395,25 +307,20 @@ class GalleryQueue:
     def download_requests(self) -> list[DownloadRequest]:
         """Absorb manual CSV work, then return a live database snapshot."""
         self._sync_csv_into_db()
-        with self._database_operation() as connector:
-            return self._fetch_download_requests(connector)
+        return self._coordinator.get_download_requests()
 
     def should_attempt(self, gid: int) -> bool:
-        with self._database_operation() as connector:
-            is_downloaded = connector.gallery_gids.check_gid_by_gid(gid)
-            is_pending = gid in connector.get_pending_download_gids()
-            is_requested = connector.get_download_request(gid) is not None
+        state = self._coordinator.get_candidate_states((gid,))[gid]
         return should_attempt_download(
-            is_downloaded=is_downloaded,
-            is_pending=is_pending,
-            is_requested=is_requested,
+            is_downloaded=state.cataloged,
+            is_pending=state.redownload_required,
+            is_requested=state.requested,
             wocount=self.wocount,
             wocount_max=self.wocount_max,
         )
 
     def pending_redownload_gids(self) -> list[int]:
-        with self._database_operation() as connector:
-            return connector.get_pending_download_gids()
+        return self._coordinator.get_pending_redownload_gids()
 
     def note_skip(self) -> None:
         self.wocount += 1

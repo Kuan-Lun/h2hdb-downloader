@@ -40,7 +40,7 @@ if [[ ${#PY_FILES[@]} -eq 0 ]]; then
     exit 0
 fi
 
-uv run black "${PY_FILES[@]}" >&2
-uv run ruff check --fix "${PY_FILES[@]}" >&2
-uv run black "${PY_FILES[@]}" >&2
-uv run mypy "${PY_FILES[@]}" >&2
+uv run --no-sync black "${PY_FILES[@]}" >&2
+uv run --no-sync ruff check --fix "${PY_FILES[@]}" >&2
+uv run --no-sync black "${PY_FILES[@]}" >&2
+uv run --no-sync mypy "${PY_FILES[@]}" >&2

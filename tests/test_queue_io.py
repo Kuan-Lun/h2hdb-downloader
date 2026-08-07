@@ -2,15 +2,15 @@ import csv
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
-from h2hdb import DownloadRequest, H2HDBConfig
+from h2hdb import DownloadRequest, DownloadTurn
 
 from h2hdb_downloader._queue import GalleryQueue
 
 if TYPE_CHECKING:
-    from .conftest import FakeDBStore
+    from .conftest import FakeCoordinator, FakeDBStore
 
 
 def claim_paths(path: Path) -> list[Path]:
@@ -222,6 +222,19 @@ def test_request_download_returns_token_and_completion_is_conditional(
     assert fake_store.download_requests == {}
 
 
+def test_request_methods_reject_mismatched_gid_and_url_before_core(
+    queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
+) -> None:
+    queue = queue_factory()
+
+    with pytest.raises(ValueError, match="42 does not match URL GID 1"):
+        queue.request_download(42, "https://exhentai.org/g/1/abcdef0123/")
+    with pytest.raises(ValueError, match="42 does not match URL GID 1"):
+        queue.ensure_download_request(42, "https://exhentai.org/g/1/abcdef0123/")
+
+    assert fake_store.download_requests == {}
+
+
 def test_ensure_download_request_preserves_an_existing_token(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
@@ -247,7 +260,7 @@ def test_ensure_download_request_preserves_an_existing_token(
     assert created.request == fake_store.download_requests[2]
 
 
-def test_database_operations_use_the_five_minute_maintenance_gate(
+def test_queue_delegates_request_lifecycle_to_coordinator(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
     queue = queue_factory()
@@ -255,12 +268,10 @@ def test_database_operations_use_the_five_minute_maintenance_gate(
     request = queue.request_download(1)
     queue.complete_download_request(request)
 
-    assert fake_store.database_gate_timeouts == [300, 300]
-    assert fake_store.connector_exit_gate_depths == [1, 1]
-    assert fake_store.database_gate_depth == 0
+    assert fake_store.download_requests == {}
 
 
-def test_download_turn_operations_are_short_gated_database_calls(
+def test_download_turn_operations_delegate_to_coordinator(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
     queue = queue_factory()
@@ -272,9 +283,9 @@ def test_download_turn_operations_are_short_gated_database_calls(
     assert queue.completed_gallery_ingest_generation() == 0
     assert queue.request_gallery_ingest(turn)
     assert queue.completed_gallery_ingest_generation() == turn.generation
-    assert fake_store.database_gate_timeouts == [300] * 5
-    assert fake_store.connector_exit_gate_depths == [1] * 5
-    assert fake_store.database_gate_depth == 0
+    assert fake_store.claim_download_turn_calls == [300]
+    assert fake_store.renew_download_turn_calls == [(turn, 300)]
+    assert fake_store.gallery_ingest_state_reads == 2
 
 
 def test_download_turn_handoff_is_idempotent(
@@ -302,8 +313,6 @@ def test_finish_download_turn_atomically_hands_off_and_completes_exact_request(
 
     assert fake_store.download_requests == {}
     assert fake_store.completed_ingest_generation == turn.generation
-    assert fake_store.database_gate_timeouts == [300] * 3
-    assert fake_store.connector_exit_gate_depths == [1] * 3
 
 
 def test_requests_can_settle_inside_a_live_turn_before_one_batch_handoff(
@@ -337,10 +346,8 @@ def test_stale_download_turn_cannot_renew_or_handoff(
     queue_factory: Callable[..., GalleryQueue],
     fake_store: FakeDBStore,
 ) -> None:
-    from .conftest import FakeDownloadTurn
-
     queue = queue_factory()
-    stale_turn = FakeDownloadTurn(99, "stale")
+    stale_turn = DownloadTurn(99, "stale", 10_000)
     request = queue.request_download(1)
 
     assert not queue.renew_download_turn(stale_turn, lease_seconds=300)
@@ -393,9 +400,9 @@ def test_pending_redownload_gids_reads_database_state_live(
 
 
 def test_csv_path_none_disables_manual_queue_without_touching_filesystem(
-    patch_h2hdb: FakeDBStore, tmp_path: Path
+    fake_coordinator: FakeCoordinator, tmp_path: Path
 ) -> None:
-    queue = GalleryQueue(config=cast(H2HDBConfig, object()), csv_path=None)
+    queue = GalleryQueue(coordinator=fake_coordinator, csv_path=None)
 
     assert queue.download_requests() == []
     assert list(tmp_path.iterdir()) == []

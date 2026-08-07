@@ -43,15 +43,15 @@ fi
 
 # Pass 1: pymarkdown fix. Always non-blocking; tool-level errors are
 # unlikely and if they happen they'd cascade into the ruff pass too.
-uv run pymarkdown fix "${MD_FILES[@]}" >/dev/null 2>&1 || true
+uv run --no-sync pymarkdown fix "${MD_FILES[@]}" >/dev/null 2>&1 || true
 
 # Pass 2: ruff format --preview. Surface parse errors via exit 2.
-if ! uv run ruff format --preview "${MD_FILES[@]}" >&2; then
+if ! uv run --no-sync ruff format --preview "${MD_FILES[@]}" >&2; then
     exit 2
 fi
 
 # Pass 3: pymarkdown scan. Unlike the best-effort fix pass, unresolved lints
 # and tool failures block finalization.
-if ! uv run pymarkdown scan "${MD_FILES[@]}" >&2; then
+if ! uv run --no-sync pymarkdown scan "${MD_FILES[@]}" >&2; then
     exit 2
 fi

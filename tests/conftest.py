@@ -1,14 +1,21 @@
 import asyncio
-from collections.abc import Awaitable, Callable, Generator
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Self, cast
+from typing import Self
 
 import pytest
 from h2h_galleryinfo_parser import GalleryURLParser
-from h2hdb import DownloadRequest, H2HDBConfig
+from h2hdb import (
+    DownloadCandidateState,
+    DownloadRequest,
+    DownloadTurn,
+    EnsureDownloadRequestResult,
+    GalleryIngestPhase,
+    GalleryIngestState,
+    GalleryIngestTurn,
+)
 from hbrowser import (
     GalleryLookupResult,
     GallerySearchResult,
@@ -18,23 +25,6 @@ from hbrowser import (
 
 from h2hdb_downloader._queue import GalleryQueue
 from h2hdb_downloader.downloader import Downloader
-
-
-@dataclass(frozen=True, slots=True)
-class FakeDownloadTurn:
-    generation: int
-    owner_token: str
-
-
-@dataclass(frozen=True, slots=True)
-class FakeGalleryIngestState:
-    completed_generation: int
-
-
-@dataclass(frozen=True, slots=True)
-class FakeEnsureDownloadRequestResult:
-    request: DownloadRequest
-    created: bool
 
 
 @dataclass
@@ -47,44 +37,41 @@ class FakeDBStore:
     next_request_token: int = 1
     removed_gids: set[int] = field(default_factory=set)
     todelete_gids: set[int] = field(default_factory=set)
+    accepted_submissions: list[tuple[int, DownloadRequest | None]] = field(
+        default_factory=list
+    )
     redownload_time_updates: list[int] = field(default_factory=list)
     request_download_error: Exception | None = None
     request_download_observer: Callable[[], None] | None = None
-    database_gate_depth: int = 0
-    database_gate_timeouts: list[int] = field(default_factory=list)
-    connector_exit_gate_depths: list[int] = field(default_factory=list)
     download_turn_available: bool = True
     next_download_turn_generation: int = 1
-    active_download_turn: FakeDownloadTurn | None = None
-    handed_off_turn: FakeDownloadTurn | None = None
+    active_download_turn: DownloadTurn | None = None
+    handed_off_turn: DownloadTurn | None = None
     completed_ingest_generation: int = 0
     auto_complete_gallery_ingest: bool = True
     claim_download_turn_calls: list[int] = field(default_factory=list)
-    renew_download_turn_calls: list[tuple[FakeDownloadTurn, int]] = field(
+    renew_download_turn_calls: list[tuple[DownloadTurn, int]] = field(
         default_factory=list
     )
     renew_download_turn_result: bool = True
     renew_download_turn_observer: Callable[[], None] | None = None
-    gallery_ingest_requests: list[FakeDownloadTurn] = field(default_factory=list)
-    finished_download_turns: list[tuple[FakeDownloadTurn, DownloadRequest]] = field(
+    gallery_ingest_requests: list[DownloadTurn] = field(default_factory=list)
+    finished_download_turns: list[tuple[DownloadTurn, DownloadRequest]] = field(
         default_factory=list
     )
-    finished_missing_download_turns: list[
-        tuple[FakeDownloadTurn, DownloadRequest, int]
-    ] = field(default_factory=list)
-    completed_download_requests_in_turn: list[
-        tuple[FakeDownloadTurn, DownloadRequest]
-    ] = field(default_factory=list)
+    finished_missing_download_turns: list[tuple[DownloadTurn, DownloadRequest, int]] = (
+        field(default_factory=list)
+    )
+    completed_download_requests_in_turn: list[tuple[DownloadTurn, DownloadRequest]] = (
+        field(default_factory=list)
+    )
     completed_missing_download_requests_in_turn: list[
-        tuple[FakeDownloadTurn, DownloadRequest, int]
+        tuple[DownloadTurn, DownloadRequest, int]
     ] = field(default_factory=list)
     finish_download_turn_observer: Callable[[], None] | None = None
     complete_download_request_in_turn_observer: Callable[[], None] | None = None
-    accepted_gallery_ingest_turns: set[FakeDownloadTurn] = field(default_factory=set)
+    accepted_gallery_ingest_turns: set[DownloadTurn] = field(default_factory=set)
     gallery_ingest_state_reads: int = 0
-
-    def assert_database_gate(self) -> None:
-        assert self.database_gate_depth > 0
 
     def complete_gallery_ingest(self) -> None:
         turn = self.handed_off_turn
@@ -98,56 +85,11 @@ class FakeDBStore:
         self.download_turn_available = True
 
 
-class FakeGalleryGIDs:
+class FakeCoordinator:
     def __init__(self, store: FakeDBStore) -> None:
         self.store = store
 
-    def get_gids(self) -> list[int]:
-        self.store.assert_database_gate()
-        return list(self.store.gids)
-
-    def check_gid_by_gid(self, gid: int) -> bool:
-        self.store.assert_database_gate()
-        return gid in self.store.gids
-
-
-class FakeRemovedGalleries:
-    def __init__(self, store: FakeDBStore) -> None:
-        self.store = store
-
-    def insert_removed_gallery_gid(self, gid: int) -> None:
-        self.store.assert_database_gate()
-        self.store.removed_gids.add(gid)
-
-    def delete_removed_gallery_gid(self, gid: int) -> None:
-        self.store.assert_database_gate()
-        self.store.removed_gids.discard(gid)
-
-
-class FakeConnector:
-    def __init__(self, store: FakeDBStore) -> None:
-        self.store = store
-        self.gallery_gids = FakeGalleryGIDs(store)
-        self.removed_galleries = FakeRemovedGalleries(store)
-
-    def __enter__(self) -> FakeConnector:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.store.connector_exit_gate_depths.append(self.store.database_gate_depth)
-        self.store.assert_database_gate()
-
-    @contextmanager
-    def database_gate(self, *, timeout_seconds: int) -> Generator[FakeConnector]:
-        self.store.database_gate_timeouts.append(timeout_seconds)
-        self.store.database_gate_depth += 1
-        try:
-            yield self
-        finally:
-            self.store.database_gate_depth -= 1
-
-    def get_pending_download_gids(self) -> list[int]:
-        self.store.assert_database_gate()
+    def get_pending_redownload_gids(self) -> list[int]:
         return [
             gid
             for gid in self.store.pending_download_gids
@@ -156,24 +98,29 @@ class FakeConnector:
         ]
 
     def get_download_requests(self) -> list[DownloadRequest]:
-        self.store.assert_database_gate()
         return sorted(self.store.download_requests.values(), key=lambda item: item.gid)
 
     def get_download_request(self, gid: int) -> DownloadRequest | None:
-        self.store.assert_database_gate()
         return self.store.download_requests.get(gid)
 
+    def get_candidate_states(
+        self, gids: Sequence[int]
+    ) -> Mapping[int, DownloadCandidateState]:
+        return {
+            gid: DownloadCandidateState(
+                gid=gid,
+                cataloged=gid in self.store.gids,
+                redownload_required=gid in self.store.pending_download_gids,
+                requested=gid in self.store.download_requests,
+            )
+            for gid in gids
+        }
+
     def request_download(self, gid: int, url: str = "") -> DownloadRequest:
-        self.store.assert_database_gate()
         if self.store.request_download_error is not None:
             raise self.store.request_download_error
         if self.store.request_download_observer is not None:
             self.store.request_download_observer()
-        if url:
-            parsed_gid = GalleryURLParser(url=url).gid
-            if gid not in (0, parsed_gid):
-                raise ValueError
-            gid = parsed_gid
         if gid <= 0:
             raise ValueError
         existing = self.store.download_requests.get(gid)
@@ -188,31 +135,24 @@ class FakeConnector:
         self,
         gid: int,
         url: str = "",
-    ) -> FakeEnsureDownloadRequestResult:
-        self.store.assert_database_gate()
+    ) -> EnsureDownloadRequestResult:
         if self.store.request_download_error is not None:
             raise self.store.request_download_error
         if self.store.request_download_observer is not None:
             self.store.request_download_observer()
-        if url:
-            parsed_gid = GalleryURLParser(url=url).gid
-            if gid not in (0, parsed_gid):
-                raise ValueError
-            gid = parsed_gid
         if gid <= 0:
             raise ValueError
 
         existing = self.store.download_requests.get(gid)
         if existing is not None:
-            return FakeEnsureDownloadRequestResult(existing, created=False)
+            return EnsureDownloadRequestResult(existing, created=False)
 
         request = DownloadRequest(gid, url, f"token-{self.store.next_request_token}")
         self.store.next_request_token += 1
         self.store.download_requests[gid] = request
-        return FakeEnsureDownloadRequestResult(request, created=True)
+        return EnsureDownloadRequestResult(request, created=True)
 
     def complete_download_request(self, request: DownloadRequest) -> None:
-        self.store.assert_database_gate()
         current = self.store.download_requests.get(request.gid)
         if current is not None and current.token == request.token:
             self.store.download_requests.pop(request.gid)
@@ -222,44 +162,49 @@ class FakeConnector:
         request: DownloadRequest,
         gid: int,
     ) -> None:
-        self.store.assert_database_gate()
         current = self.store.download_requests.get(request.gid)
         if current is not None and current.token == request.token:
             self.store.download_requests.pop(request.gid)
             self.store.removed_gids.add(gid)
 
-    def clear_removed_gallery_gid(self, gid: int) -> None:
-        self.store.assert_database_gate()
-        self.store.removed_gids.discard(gid)
+    def record_gallery_found(self, *gids: int) -> None:
+        self.store.removed_gids.difference_update(gids)
 
-    def update_redownload_time_to_now_by_gid(self, gid: int) -> None:
-        self.store.assert_database_gate()
-        self.store.redownload_time_updates.append(gid)
+    def record_accepted_submission(
+        self,
+        gid: int,
+        *,
+        request: DownloadRequest | None = None,
+    ) -> None:
+        self.store.accepted_submissions.append((gid, request))
+        self.store.removed_gids.discard(gid)
+        if gid in self.store.gids:
+            self.store.redownload_time_updates.append(gid)
         if gid in self.store.pending_download_gids:
             self.store.pending_download_gids.remove(gid)
+        if request is not None:
+            self.complete_download_request(request)
 
     def request_gallery_deletion(self, gid: int) -> None:
-        self.store.assert_database_gate()
         self.store.todelete_gids.add(gid)
 
-    def claim_download_turn(self, *, lease_seconds: int) -> FakeDownloadTurn | None:
-        self.store.assert_database_gate()
+    def get_gallery_deletion_requests(self) -> list[int]:
+        return sorted(self.store.todelete_gids)
+
+    def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None:
         self.store.claim_download_turn_calls.append(lease_seconds)
         if not self.store.download_turn_available:
             return None
 
         generation = self.store.next_download_turn_generation
-        turn = FakeDownloadTurn(generation, f"turn-token-{generation}")
+        turn = DownloadTurn(generation, f"turn-token-{generation}", 10_000)
         self.store.next_download_turn_generation += 1
         self.store.download_turn_available = False
         self.store.active_download_turn = turn
         self.store.handed_off_turn = None
         return turn
 
-    def renew_download_turn(
-        self, turn: FakeDownloadTurn, *, lease_seconds: int
-    ) -> bool:
-        self.store.assert_database_gate()
+    def renew_download_turn(self, turn: DownloadTurn, *, lease_seconds: int) -> bool:
         self.store.renew_download_turn_calls.append((turn, lease_seconds))
         if self.store.renew_download_turn_observer is not None:
             self.store.renew_download_turn_observer()
@@ -269,8 +214,7 @@ class FakeConnector:
             and self.store.handed_off_turn is None
         )
 
-    def request_gallery_ingest(self, turn: FakeDownloadTurn) -> bool:
-        self.store.assert_database_gate()
+    def request_gallery_ingest(self, turn: DownloadTurn) -> bool:
         self.store.gallery_ingest_requests.append(turn)
         if turn in self.store.accepted_gallery_ingest_turns:
             return True
@@ -285,10 +229,9 @@ class FakeConnector:
 
     def complete_download_request_in_turn(
         self,
-        turn: FakeDownloadTurn,
+        turn: DownloadTurn,
         request: DownloadRequest,
     ) -> bool:
-        self.store.assert_database_gate()
         self.store.completed_download_requests_in_turn.append((turn, request))
         if self.store.complete_download_request_in_turn_observer is not None:
             self.store.complete_download_request_in_turn_observer()
@@ -305,11 +248,10 @@ class FakeConnector:
 
     def complete_missing_download_request_in_turn(
         self,
-        turn: FakeDownloadTurn,
+        turn: DownloadTurn,
         request: DownloadRequest,
         gid: int,
     ) -> bool:
-        self.store.assert_database_gate()
         self.store.completed_missing_download_requests_in_turn.append(
             (turn, request, gid)
         )
@@ -327,10 +269,9 @@ class FakeConnector:
 
     def finish_download_turn(
         self,
-        turn: FakeDownloadTurn,
+        turn: DownloadTurn,
         request: DownloadRequest,
     ) -> bool:
-        self.store.assert_database_gate()
         self.store.finished_download_turns.append((turn, request))
         if self.store.finish_download_turn_observer is not None:
             self.store.finish_download_turn_observer()
@@ -350,11 +291,10 @@ class FakeConnector:
 
     def finish_missing_download_turn(
         self,
-        turn: FakeDownloadTurn,
+        turn: DownloadTurn,
         request: DownloadRequest,
         gid: int,
     ) -> bool:
-        self.store.assert_database_gate()
         self.store.finished_missing_download_turns.append((turn, request, gid))
         if turn in self.store.accepted_gallery_ingest_turns:
             return True
@@ -371,10 +311,44 @@ class FakeConnector:
             self.store.complete_gallery_ingest()
         return True
 
-    def get_gallery_ingest_state(self) -> FakeGalleryIngestState:
-        self.store.assert_database_gate()
+    def get_gallery_ingest_state(self) -> GalleryIngestState:
         self.store.gallery_ingest_state_reads += 1
-        return FakeGalleryIngestState(self.store.completed_ingest_generation)
+        generation = self.store.next_download_turn_generation - 1
+        return GalleryIngestState(
+            phase=GalleryIngestPhase.ready,
+            generation=generation,
+            completed_generation=self.store.completed_ingest_generation,
+            owner_token=None,
+            lease_expires_at=None,
+            handoff_generation=None,
+            handoff_owner_token=None,
+            last_transition_at=0,
+        )
+
+    def claim_gallery_ingest(
+        self,
+        *,
+        lease_seconds: int,
+        periodic_scan: bool,
+    ) -> GalleryIngestTurn | None:
+        raise AssertionError("Downloader must not claim an ingest turn")
+
+    def renew_gallery_ingest(
+        self,
+        turn: GalleryIngestTurn,
+        *,
+        lease_seconds: int,
+        sqlite_busy_timeout_ms: int | None = None,
+    ) -> int | None:
+        raise AssertionError("Downloader must not renew an ingest turn")
+
+    def complete_gallery_ingest(
+        self,
+        turn: GalleryIngestTurn,
+        *,
+        allow_expired_sqlite_lease: bool = False,
+    ) -> bool:
+        raise AssertionError("Downloader must not complete an ingest turn")
 
 
 class FakeDriver:
@@ -409,14 +383,12 @@ class FakeDriver:
         pass
 
     async def download(self, gallery: GalleryURLParser) -> bool:
-        assert self.store.database_gate_depth == 0
         self.download_calls.append(gallery)
         if callable(self.download_result):
             return await self.download_result(gallery)
         return self.download_result
 
     async def lookup_gid(self, gid: int) -> GalleryLookupResult:
-        assert self.store.database_gate_depth == 0
         self.lookup_calls.append(gid)
         if self.lookup_observer is not None:
             self.lookup_observer(gid)
@@ -426,7 +398,6 @@ class FakeDriver:
             raise AssertionError(f"Unscripted GID lookup: {gid}") from None
 
     async def search(self, request: SearchRequest) -> GallerySearchResult:
-        assert self.store.database_gate_depth == 0
         self.search_calls.append(request)
         if self.search_observer is not None:
             self.search_observer(request)
@@ -442,7 +413,6 @@ class FakeDriver:
         )
 
     async def gallery2tag(self, gallery: GalleryURLParser, filter: str) -> list[Tag]:
-        assert self.store.database_gate_depth == 0
         self.gallery2tag_calls.append((gallery, filter))
         gallery_result = self.gallery_tag_results.get((gallery.gid, filter))
         if gallery_result is not None:
@@ -460,16 +430,8 @@ def fake_store() -> FakeDBStore:
 
 
 @pytest.fixture
-def patch_h2hdb(
-    monkeypatch: pytest.MonkeyPatch, fake_store: FakeDBStore
-) -> FakeDBStore:
-    """Redirect the queue's ``H2HDB`` lookup at the shared fake store."""
-
-    def factory(*, config: object) -> FakeConnector:
-        return FakeConnector(fake_store)
-
-    monkeypatch.setattr("h2hdb_downloader._queue.H2HDB", factory)
-    return fake_store
+def fake_coordinator(fake_store: FakeDBStore) -> FakeCoordinator:
+    return FakeCoordinator(fake_store)
 
 
 @pytest.fixture(autouse=True)
@@ -489,26 +451,21 @@ def fake_driver(fake_store: FakeDBStore) -> FakeDriver:
 
 @pytest.fixture
 def queue_factory(
-    patch_h2hdb: FakeDBStore, tmp_path: Path
+    fake_coordinator: FakeCoordinator, tmp_path: Path
 ) -> Callable[..., GalleryQueue]:
     def make(csv_path: str | Path | None = None) -> GalleryQueue:
         path = csv_path or tmp_path / "todownload_gids.csv"
-        return GalleryQueue(config=cast(H2HDBConfig, object()), csv_path=path)
+        return GalleryQueue(coordinator=fake_coordinator, csv_path=path)
 
     return make
 
 
 @pytest.fixture
 def downloader_factory(
-    monkeypatch: pytest.MonkeyPatch,
-    patch_h2hdb: FakeDBStore,
+    fake_coordinator: FakeCoordinator,
     fake_driver: FakeDriver,
     tmp_path: Path,
 ) -> Callable[..., Downloader]:
-    monkeypatch.setattr(
-        "h2hdb_downloader.downloader.load_config", lambda config_path: object()
-    )
-
     def make(
         *,
         wait4client: int = 0,
@@ -520,7 +477,7 @@ def downloader_factory(
     ) -> Downloader:
         return Downloader(
             fake_driver,
-            config_path="unused.json",
+            coordinator=fake_coordinator,
             csv_path=tmp_path / "todownload_gids.csv",
             wait4client=wait4client,
             retry2download=retry2download,
