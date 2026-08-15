@@ -13,7 +13,7 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
     "h2h-galleryinfo-parser>=0.5.1,<0.6",
     "h2hdb>=0.22.0.2,<0.23",
-    "hbrowser>=0.36.4,<0.37",
+    "hbrowser>=0.36.5,<0.37",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
