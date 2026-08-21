@@ -5,8 +5,8 @@ Not part of the public API. Everything here exists to support ``Downloader``.
 The underlying database tracks four independent things that this module
 ties together:
 
-- durable download requests (``todownload_gids``), each identified by an
-  immutable token so completing an old attempt cannot erase a newer request;
+- normalized durable download requests, each identified by an immutable token
+  so completing an old attempt cannot erase a newer request;
 - the generation-fenced download/ingest turn, including its recoverable lease;
 - live h2hdb state answering whether a gid is already settled, used to skip
   redundant network calls without keeping a stale process-local cache;
@@ -25,15 +25,19 @@ from uuid import uuid4
 
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import (
-    DownloadCoordinator,
-    DownloadRequest,
+    DownloadHandoff,
     DownloadTurn,
-    EnsureDownloadRequestResult,
+    EnsureDownloadRequestReceipt,
+    VNextDownloadQueueFacade,
+    VNextDownloadRequest,
 )
 
 __all__: list[str] = []
 
 CSV_HEADER = ["gid", "url"]
+_DOWNLOAD_REQUEST_PAGE_LIMIT = 1_000
+_PENDING_REDOWNLOAD_PAGE_LIMIT = 256
+_MICROSECONDS_PER_SECOND = 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +65,7 @@ def parse_todownload_csv_rows(rows: list[list[str]]) -> list[ManualDownloadReque
     """Parse data rows (header already excluded) into queue entries.
 
     A blank gid column means "derive the gid from the URL". URL parsing belongs
-    to this downloader adapter; the core coordinator only receives normalized
+    to this downloader adapter; the core facade only receives normalized
     positive gids.
     """
     entries = []
@@ -155,11 +159,11 @@ class GalleryQueue:
 
     def __init__(
         self,
-        coordinator: DownloadCoordinator,
+        facade: VNextDownloadQueueFacade,
         csv_path: str | os.PathLike[str] | None,
     ) -> None:
         """``csv_path=None`` disables the manual CSV queue."""
-        self._coordinator = coordinator
+        self._facade = facade
         self.csv_path = Path(csv_path) if csv_path is not None else None
         self.wocount = 0
         self.wocount_max = random_wocount_max()
@@ -187,7 +191,7 @@ class GalleryQueue:
 
         entries = read_todownload_csv(claim_path)
         for entry in entries:
-            self._coordinator.request_download(entry.gid, entry.url)
+            self._facade.request_download(entry.gid, entry.url)
 
         try:
             after = claim_path.stat()
@@ -204,8 +208,8 @@ class GalleryQueue:
         claim_path.unlink(missing_ok=True)
         return True
 
-    def request_download(self, gid: int, url: str = "") -> DownloadRequest:
-        return self._coordinator.request_download(
+    def request_download(self, gid: int, url: str = "") -> VNextDownloadRequest:
+        return self._facade.request_download(
             _validate_request_identity(gid, url),
             url,
         )
@@ -214,103 +218,110 @@ class GalleryQueue:
         self,
         gid: int,
         url: str = "",
-    ) -> EnsureDownloadRequestResult:
+    ) -> EnsureDownloadRequestReceipt:
         """Create a request only when no request for ``gid`` already exists."""
 
-        return self._coordinator.ensure_download_request(
+        return self._facade.ensure_download_request(
             _validate_request_identity(gid, url),
             url,
         )
 
-    def complete_download_request(self, request: DownloadRequest) -> None:
-        self._coordinator.complete_download_request(request)
+    def complete_download_request(self, request: VNextDownloadRequest) -> bool:
+        return self._facade.complete_download_request(request)
 
     def complete_missing_download_request(
         self,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
         gid: int,
-    ) -> None:
-        self._coordinator.complete_missing_download_request(request, gid)
+    ) -> bool:
+        return self._facade.complete_missing_download_request(request, gid)
 
     def record_gallery_found(self, *gids: int) -> None:
-        self._coordinator.record_gallery_found(*gids)
-
-    def record_accepted_submission(
-        self,
-        gid: int,
-        *,
-        request: DownloadRequest | None = None,
-    ) -> None:
-        self._coordinator.record_accepted_submission(gid, request=request)
+        self._facade.record_gallery_found(*gids)
 
     def request_gallery_deletion(self, gid: int) -> None:
-        self._coordinator.request_gallery_deletion(gid)
+        self._facade.request_deletion(gid)
 
     def is_cataloged(self, gid: int) -> bool:
-        return self._coordinator.get_candidate_states((gid,))[gid].cataloged
+        return self._facade.get_candidate_states((gid,))[gid].cataloged
 
-    def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn | None:
-        return self._coordinator.claim_download_turn(lease_seconds=lease_seconds)
-
-    def renew_download_turn(self, turn: DownloadTurn, *, lease_seconds: int) -> bool:
-        return self._coordinator.renew_download_turn(
-            turn,
-            lease_seconds=lease_seconds,
+    def claim_download_turn(self, *, lease_seconds: int) -> DownloadTurn:
+        return self._facade.claim_download_turn(
+            lease_duration_microseconds=lease_seconds * _MICROSECONDS_PER_SECOND
         )
 
-    def request_gallery_ingest(self, turn: DownloadTurn) -> bool:
-        return self._coordinator.request_gallery_ingest(turn)
+    def renew_download_turn(
+        self,
+        turn: DownloadTurn,
+        *,
+        lease_seconds: int,
+    ) -> DownloadTurn:
+        return self._facade.renew_download_turn(
+            turn,
+            lease_duration_microseconds=lease_seconds * _MICROSECONDS_PER_SECOND,
+        )
+
+    def handoff_download_turn(self, turn: DownloadTurn) -> DownloadHandoff:
+        return self._facade.handoff_download_turn(turn)
 
     def complete_download_request_in_turn(
         self,
         turn: DownloadTurn,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
     ) -> bool:
-        return self._coordinator.complete_download_request_in_turn(turn, request)
+        return self._facade.complete_download_request_in_turn(turn, request)
 
     def complete_missing_download_request_in_turn(
         self,
         turn: DownloadTurn,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
         gid: int,
     ) -> bool:
-        return self._coordinator.complete_missing_download_request_in_turn(
+        return self._facade.complete_missing_download_request_in_turn(
             turn,
             request,
             gid,
         )
 
     def finish_download_turn(
-        self, turn: DownloadTurn, request: DownloadRequest
-    ) -> bool:
-        return self._coordinator.finish_download_turn(turn, request)
+        self, turn: DownloadTurn, request: VNextDownloadRequest
+    ) -> DownloadHandoff:
+        return self._facade.finish_download_turn(turn, request)
 
     def finish_missing_download_turn(
         self,
         turn: DownloadTurn,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
         gid: int,
-    ) -> bool:
-        return self._coordinator.finish_missing_download_turn(turn, request, gid)
+    ) -> DownloadHandoff:
+        return self._facade.finish_missing_download_turn(turn, request, gid)
 
-    def completed_gallery_ingest_generation(self) -> int:
-        return self._coordinator.get_gallery_ingest_state().completed_generation
+    def is_download_handoff_complete(self, handoff: DownloadHandoff) -> bool:
+        return self._facade.is_download_handoff_complete(handoff)
 
-    def is_current(self, request: DownloadRequest) -> bool:
-        current = self._coordinator.get_download_request(request.gid)
+    def is_current(self, request: VNextDownloadRequest) -> bool:
+        current = self._facade.get_download_request(request.gid)
         return (
             current is not None
             and current.gid == request.gid
-            and current.token == request.token
+            and current.request_token == request.request_token
         )
 
-    def download_requests(self) -> list[DownloadRequest]:
-        """Absorb manual CSV work, then return a live database snapshot."""
+    def download_requests(self) -> list[VNextDownloadRequest]:
+        """Absorb manual CSV work, then collect a bounded-page live snapshot."""
         self._sync_csv_into_db()
-        return self._coordinator.get_download_requests()
+        requests: list[VNextDownloadRequest] = []
+        after_gid = 0
+        while page := self._facade.list_download_requests(
+            after_gid=after_gid,
+            limit=_DOWNLOAD_REQUEST_PAGE_LIMIT,
+        ):
+            requests.extend(page)
+            after_gid = page[-1].gid
+        return requests
 
     def should_attempt(self, gid: int) -> bool:
-        state = self._coordinator.get_candidate_states((gid,))[gid]
+        state = self._facade.get_candidate_states((gid,))[gid]
         return should_attempt_download(
             is_downloaded=state.cataloged,
             is_pending=state.redownload_required,
@@ -320,7 +331,21 @@ class GalleryQueue:
         )
 
     def pending_redownload_gids(self) -> list[int]:
-        return self._coordinator.get_pending_redownload_gids()
+        gids: list[int] = []
+        cursor = None
+        while True:
+            page = self._facade.list_pending_redownloads(
+                cursor=cursor,
+                limit=_PENDING_REDOWNLOAD_PAGE_LIMIT,
+            )
+            gids.extend(page.gids)
+            if page.terminal:
+                return gids
+            cursor = page.next_cursor
+            if cursor is None:
+                raise RuntimeError(
+                    "nonterminal pending-redownload page omitted its cursor"
+                )
 
     def note_skip(self) -> None:
         self.wocount += 1

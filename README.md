@@ -16,7 +16,8 @@ the browser session and the overall process lifecycle.
   periodically, at a random interval (1 to 19 attempts), when one is
   force-redownloaded as an integrity re-check.
 - **Durable requests** — immediately before a real download starts, the
-  package creates a tokenized request in h2hdb's `todownload_gids` table.
+  package creates a tokenized request through h2hdb's normalized operational
+  queue facade.
   It conditionally completes that exact token only after success. A `False`
   result, exception, cancellation, or process termination leaves resumable
   work behind, while a newer request for the same gid cannot be erased by
@@ -45,7 +46,8 @@ the browser session and the overall process lifecycle.
   the single-root form includes the handoff in that transaction, while the
   batch form retains `DOWNLOADING` until the boundary. A newer request fences
   both missing mutations.
-- **Core boundary** — the caller injects h2hdb's public `DownloadCoordinator`.
+- **Core boundary** — the caller injects h2hdb's public
+  `VNextDownloadQueueFacade`.
   This package never opens a connector, reaches into a repository, migrates the
   schema, or manages the database gate. Browser search, downloads, retry sleeps,
   and tag traversal remain outside the coordinator's short synchronous calls.
@@ -102,7 +104,7 @@ application's job, not the library's.
 ```python
 Downloader(
     driver: ExHDriver,         # an un-entered driver; see below
-    coordinator: DownloadCoordinator, # initialized public h2hdb port
+    facade: VNextDownloadQueueFacade, # initialized public h2hdb facade
     csv_path: str | None = None,  # path to the manual download-queue CSV
     *,
     wait4client: int,       # seconds to wait before retrying after ClientOfflineException
@@ -115,8 +117,8 @@ Downloader(
 ```
 
 The application owns core configuration and startup. Inject a compatible
-`DownloadCoordinator`; downloader never runs schema migrations. The concrete
-core factory performs the consumer compatibility check.
+`VNextDownloadQueueFacade`; downloader never initializes the schema or loads
+core configuration.
 
 `csv_path` only enables the optional "queue a gid/url by editing a CSV file"
 feature described above. Leave it as `None` if you don't need that; durable
@@ -206,7 +208,9 @@ thing.
   GIDs pending. Newly flagged GIDs wait for the next call.
 - `pending_redownload_gids()` — a snapshot list of gids h2hdb currently
   flags as needing a periodic redownload. Every call reads live database
-  state; read-only and safe to call repeatedly. Prefer
+  state through bounded, revision-and-cutoff-pinned keyset pages; read-only and
+  safe to call repeatedly. Empty intermediate pages do not truncate the scan.
+  Prefer
   `drain_pending_redownloads()` when processing the whole snapshot so it can
   share ingest barriers across roots.
 
@@ -219,7 +223,7 @@ same accepted-submission soft threshold:
 ```python
 import asyncio
 from h2hdb_downloader import Downloader, TagCascadePolicy
-from h2hdb import load_config, open_database
+from h2hdb import VNextDownloadQueueFacade, load_config
 from hbrowser import ExHDriver
 from h2h_galleryinfo_parser import GalleryURLParser
 
@@ -230,10 +234,10 @@ policy = TagCascadePolicy(
 
 
 async def main():
-    coordinator = open_database(load_config("h2hdb-config.json"))
+    facade = VNextDownloadQueueFacade(load_config("h2hdb-config.json"))
     async with Downloader(
         ExHDriver(headless=True),
-        coordinator=coordinator,
+        facade=facade,
         csv_path="todownload_gids.csv",
         wait4client=30 * 60,
         retry2download=4 * 60 * 60,

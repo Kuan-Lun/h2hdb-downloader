@@ -10,10 +10,11 @@ from typing import Protocol, Self, TypeVar, assert_never
 
 from h2h_galleryinfo_parser import GalleryURLParser
 from h2hdb import (
-    CoordinatorUnavailableError,
-    DownloadCoordinator,
-    DownloadRequest,
+    DownloadHandoff,
+    DownloadIngestUnavailableError,
     DownloadTurn,
+    VNextDownloadQueueFacade,
+    VNextDownloadRequest,
 )
 from hbrowser import (
     ConfirmedGalleryMissing,
@@ -63,14 +64,14 @@ class _KeepRequest:
 class _CompleteRequest:
     """The durable root request completed successfully."""
 
-    request: DownloadRequest
+    request: VNextDownloadRequest
 
 
 @dataclass(frozen=True, slots=True)
 class _ConfirmMissing:
     """The requested GID was conclusively absent."""
 
-    request: DownloadRequest
+    request: VNextDownloadRequest
     gid: int
 
 
@@ -97,6 +98,13 @@ class _DownloadBatchContext:
 
     def note_submission(self, gid: int) -> None:
         self.submitted_gids.add(gid)
+
+
+@dataclass(slots=True)
+class _DownloadTurnLease:
+    """The latest exact lease receipt shared with heartbeat and worker calls."""
+
+    turn: DownloadTurn
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +147,7 @@ class Downloader:
     request queue internally (see ``_queue.GalleryQueue``). A request is
     completed only after its download succeeds or its gid is conclusively
     removed/redirected, so an interrupted or failed attempt remains resumable.
-    ``coordinator`` is an initialized, schema-compatible h2hdb public port; its
+    ``facade`` is an initialized, schema-compatible h2hdb public facade; its
     configuration and migrations remain the calling application's concern.
     ``csv_path`` is optional: it only enables the manual "queue a gid/url by
     editing a CSV file" feature — leave it as ``None`` if you don't need that.
@@ -157,7 +165,7 @@ class Downloader:
     def __init__(
         self,
         driver: GalleryDriver,
-        coordinator: DownloadCoordinator,
+        facade: VNextDownloadQueueFacade,
         csv_path: str | os.PathLike[str] | None = None,
         *,
         wait4client: int,
@@ -199,7 +207,7 @@ class Downloader:
         self.turn_lease_seconds = turn_lease_seconds
         self.turn_heartbeat_seconds = turn_heartbeat_seconds
         self.download_submissions_per_ingest = download_submissions_per_ingest
-        self._queue = GalleryQueue(coordinator=coordinator, csv_path=csv_path)
+        self._queue = GalleryQueue(facade=facade, csv_path=csv_path)
 
     async def __aenter__(self) -> Downloader:
         await self.driver.__aenter__()
@@ -250,7 +258,7 @@ class Downloader:
     async def _download_one(
         self,
         gallery: GalleryURLParser,
-        request: DownloadRequest | None = None,
+        request: VNextDownloadRequest | None = None,
         *,
         complete_on_success: bool = True,
         batch_context: _DownloadBatchContext | None = None,
@@ -316,17 +324,16 @@ class Downloader:
     async def _attempt_download(
         self,
         gallery: GalleryURLParser,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
         *,
         complete_on_success: bool,
         batch_context: _DownloadBatchContext | None,
     ) -> bool:
         downloaded = await self.driver.download(gallery)
         if downloaded:
-            self._queue.record_accepted_submission(
-                gallery.gid,
-                request=request if complete_on_success else None,
-            )
+            self._queue.record_gallery_found(gallery.gid)
+            if complete_on_success:
+                self._queue.complete_download_request(request)
             if batch_context is not None:
                 batch_context.note_submission(gallery.gid)
             await asyncio.sleep(random())
@@ -351,7 +358,7 @@ class Downloader:
         *,
         policy: TagCascadePolicy | None = None,
         skip_check: bool = False,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
         batch_context: _DownloadBatchContext | None = None,
     ) -> _RootDownloadResult:
         if not self._queue.is_current(request):
@@ -507,7 +514,7 @@ class Downloader:
         policy: TagCascadePolicy,
         skip_check: bool,
         *,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
         batch_context: _DownloadBatchContext | None = None,
     ) -> _RootDownloadResult:
         was_submitted = batch_context is not None and batch_context.was_submitted(
@@ -638,7 +645,7 @@ class Downloader:
 
     async def _drain_pending_redownload_root(
         self,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
         policy: TagCascadePolicy,
         skip_check: bool,
         batch_context: _DownloadBatchContext,
@@ -693,7 +700,7 @@ class Downloader:
 
     async def _drain_root_request(
         self,
-        request: DownloadRequest,
+        request: VNextDownloadRequest,
         policy: TagCascadePolicy,
         skip_check: bool,
         batch_context: _DownloadBatchContext,
@@ -777,21 +784,21 @@ class Downloader:
             case _:
                 assert_never(outcome.disposition)
 
-    async def _claim_download_turn(self) -> DownloadTurn:
+    async def _claim_download_turn(self) -> _DownloadTurnLease:
         while True:
             try:
                 turn = self._queue.claim_download_turn(
                     lease_seconds=self.turn_lease_seconds
                 )
-            except CoordinatorUnavailableError:
-                turn = None
-            if turn is not None:
-                return turn
+            except DownloadIngestUnavailableError:
+                pass
+            else:
+                return _DownloadTurnLease(turn)
             await asyncio.sleep(self.turn_poll_seconds)
 
     async def _heartbeat_download_turn(
         self,
-        turn: DownloadTurn,
+        lease: _DownloadTurnLease,
         stop: asyncio.Event,
     ) -> None:
         while True:
@@ -802,23 +809,25 @@ class Downloader:
                 )
                 return
             except TimeoutError:
-                if not self._queue.renew_download_turn(
-                    turn,
-                    lease_seconds=self.turn_lease_seconds,
-                ):
-                    raise DownloadTurnLostError(
-                        f"download turn generation {turn.generation} was lost"
+                try:
+                    lease.turn = self._queue.renew_download_turn(
+                        lease.turn,
+                        lease_seconds=self.turn_lease_seconds,
                     )
+                except DownloadIngestUnavailableError as error:
+                    raise DownloadTurnLostError(
+                        f"download turn generation {lease.turn.generation} was lost"
+                    ) from error
 
     async def _run_with_turn_heartbeat(
         self,
-        turn: DownloadTurn,
+        lease: _DownloadTurnLease,
         operation: Callable[[], Awaitable[_T]],
     ) -> _T:
         stop = asyncio.Event()
         operation_task: asyncio.Future[_T] = asyncio.ensure_future(operation())
         heartbeat_task: asyncio.Task[None] = asyncio.create_task(
-            self._heartbeat_download_turn(turn, stop)
+            self._heartbeat_download_turn(lease, stop)
         )
         try:
             done, _ = await asyncio.wait(
@@ -841,48 +850,48 @@ class Downloader:
                 return_exceptions=True,
             )
 
-    async def _wait_for_gallery_ingest(self, turn: DownloadTurn) -> None:
+    async def _wait_for_gallery_ingest(self, handoff: DownloadHandoff) -> None:
         while True:
             try:
-                completed_generation = self._queue.completed_gallery_ingest_generation()
-            except CoordinatorUnavailableError:
+                completed = self._queue.is_download_handoff_complete(handoff)
+            except DownloadIngestUnavailableError:
                 pass
             else:
-                if completed_generation >= turn.generation:
+                if completed:
                     return
             await asyncio.sleep(self.turn_poll_seconds)
 
     def _complete_root_in_turn(
         self,
-        turn: DownloadTurn,
+        lease: _DownloadTurnLease,
         disposition: _RootDisposition,
     ) -> None:
-        match disposition:
-            case _KeepRequest():
-                return
-            case _CompleteRequest(request):
-                completed = self._queue.complete_download_request_in_turn(
-                    turn,
-                    request,
-                )
-            case _ConfirmMissing(request, gid):
-                completed = self._queue.complete_missing_download_request_in_turn(
-                    turn,
-                    request,
-                    gid,
-                )
-            case _:
-                assert_never(disposition)
-
-        if not completed:
+        try:
+            match disposition:
+                case _KeepRequest():
+                    return
+                case _CompleteRequest(request):
+                    self._queue.complete_download_request_in_turn(
+                        lease.turn,
+                        request,
+                    )
+                case _ConfirmMissing(request, gid):
+                    self._queue.complete_missing_download_request_in_turn(
+                        lease.turn,
+                        request,
+                        gid,
+                    )
+                case _:
+                    assert_never(disposition)
+        except DownloadIngestUnavailableError as error:
             raise DownloadTurnLostError(
-                f"download turn generation {turn.generation} was lost "
+                f"download turn generation {lease.turn.generation} was lost "
                 "while settling a batch root"
-            )
+            ) from error
 
     async def _run_batch_roots(
         self,
-        turn: DownloadTurn,
+        lease: _DownloadTurnLease,
         snapshot: Sequence[_BatchItemT],
         snapshot_index: int,
         batch_context: _DownloadBatchContext,
@@ -908,7 +917,7 @@ class Downloader:
             # normal traversal return. A later exception or process shutdown
             # cannot make an already-finished root depend on the rest of the
             # batch completing.
-            self._complete_root_in_turn(turn, outcome.disposition)
+            self._complete_root_in_turn(lease, outcome.disposition)
             accepted_unique_submissions = (
                 len(batch_context.submitted_gids) - submissions_at_batch_start
             )
@@ -927,12 +936,12 @@ class Downloader:
             Awaitable[_RootDownloadResult | None],
         ],
     ) -> _BatchDownloadResult:
-        turn = await self._claim_download_turn()
+        lease = await self._claim_download_turn()
         try:
             downloads = await self._run_with_turn_heartbeat(
-                turn,
+                lease,
                 lambda: self._run_batch_roots(
-                    turn,
+                    lease,
                     snapshot,
                     snapshot_index,
                     batch_context,
@@ -941,52 +950,60 @@ class Downloader:
                 ),
             )
         except BaseException as error:
-            if not self._queue.request_gallery_ingest(turn):
+            try:
+                self._queue.handoff_download_turn(lease.turn)
+            except DownloadIngestUnavailableError:
                 raise DownloadTurnLostError(
-                    f"download turn generation {turn.generation} was lost "
+                    f"download turn generation {lease.turn.generation} was lost "
                     "while handing off an interrupted batch"
                 ) from error
             raise
 
-        if not self._queue.request_gallery_ingest(turn):
+        try:
+            handoff = self._queue.handoff_download_turn(lease.turn)
+        except DownloadIngestUnavailableError as error:
             raise DownloadTurnLostError(
-                f"download turn generation {turn.generation} was lost before handoff"
-            )
-        await self._wait_for_gallery_ingest(turn)
+                f"download turn generation {lease.turn.generation} was lost "
+                "before handoff"
+            ) from error
+        await self._wait_for_gallery_ingest(handoff)
         return downloads
 
     async def _run_coordinated_root(
         self,
         operation: Callable[[], Awaitable[_RootDownloadResult]],
     ) -> dict[int, bool]:
-        turn = await self._claim_download_turn()
+        lease = await self._claim_download_turn()
         try:
-            result = await self._run_with_turn_heartbeat(turn, operation)
+            result = await self._run_with_turn_heartbeat(lease, operation)
         except BaseException as error:
-            if not self._queue.request_gallery_ingest(turn):
+            try:
+                self._queue.handoff_download_turn(lease.turn)
+            except DownloadIngestUnavailableError:
                 raise DownloadTurnLostError(
-                    f"download turn generation {turn.generation} was lost "
+                    f"download turn generation {lease.turn.generation} was lost "
                     "while handing off a failed root"
                 ) from error
             raise
 
-        match result.disposition:
-            case _KeepRequest():
-                handed_off = self._queue.request_gallery_ingest(turn)
-            case _CompleteRequest(request):
-                handed_off = self._queue.finish_download_turn(turn, request)
-            case _ConfirmMissing(request, gid):
-                handed_off = self._queue.finish_missing_download_turn(
-                    turn,
-                    request,
-                    gid,
-                )
-            case _:
-                assert_never(result.disposition)
-
-        if not handed_off:
+        try:
+            match result.disposition:
+                case _KeepRequest():
+                    handoff = self._queue.handoff_download_turn(lease.turn)
+                case _CompleteRequest(request):
+                    handoff = self._queue.finish_download_turn(lease.turn, request)
+                case _ConfirmMissing(request, gid):
+                    handoff = self._queue.finish_missing_download_turn(
+                        lease.turn,
+                        request,
+                        gid,
+                    )
+                case _:
+                    assert_never(result.disposition)
+        except DownloadIngestUnavailableError as error:
             raise DownloadTurnLostError(
-                f"download turn generation {turn.generation} was lost before handoff"
-            )
-        await self._wait_for_gallery_ingest(turn)
+                f"download turn generation {lease.turn.generation} was lost "
+                "before handoff"
+            ) from error
+        await self._wait_for_gallery_ingest(handoff)
         return result.downloads

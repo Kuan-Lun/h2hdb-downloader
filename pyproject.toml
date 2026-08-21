@@ -4,16 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2hdb-downloader"
-version = "0.9.5"
+version = "0.10.0"
 description = "Download gallery and insert into h2hdb"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
 license = { text = "GNU Affero General Public License v3" }
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "h2h-galleryinfo-parser>=0.5.1,<0.6",
-    "h2hdb>=0.22.0.2,<0.23",
-    "hbrowser>=0.36.7,<0.37",
+    "h2h-galleryinfo-parser>=0.5.2,<0.6",
+    "h2hdb>=0.23.0.3,<0.24",
+    "hbrowser>=0.41.0,<0.42",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -27,8 +27,8 @@ classifiers = [
 dev = [
     "build>=1.5.0",
     "black>=26.5.1",
-    "ruff>=0.16.3",
-    "mypy>=2.3.0",
+    "ruff>=0.16.4",
+    "mypy>=2.3.1",
     "pymarkdownlnt>=0.9.39",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",

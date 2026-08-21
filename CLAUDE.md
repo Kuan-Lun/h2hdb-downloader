@@ -16,12 +16,12 @@ The package has exactly three public exports
 `DownloadTurnLostError`, all defined in
 `src/h2hdb_downloader/downloader.py`.
 
-`Downloader` receives h2hdb's public `DownloadCoordinator` port from its caller;
-`GalleryQueue` delegates every durable request, candidate-state, submission,
-deletion, and turn operation to that port. This package must not construct the
+`Downloader` receives h2hdb's public `VNextDownloadQueueFacade` from its caller;
+`GalleryQueue` delegates every durable request, candidate-state, deletion, and
+turn operation to that facade. This package must not construct the
 core facade, load core configuration, manage `database_gate()`, import a SQL
 backend, or reach into a connector or repository. Keep browser/network awaits,
-retry sleeps, and tag traversal outside the coordinator's synchronous calls.
+retry sleeps, and tag traversal outside the facade's synchronous calls.
 
 Public `deep_download_by_gallery()` and `deep_download_by_gid()` calls remain
 single-root download/ingest coordination turns. `drain_queue()` and
@@ -37,12 +37,13 @@ defaults to 100. Between batch roots,
 `complete_download_request_in_turn()` and
 `complete_missing_download_request_in_turn()` persist exact-token results while
 retaining `DOWNLOADING`; `_KeepRequest` remains queued. The batch calls
-`request_gallery_ingest()` once at the submission-count boundary or snapshot
-exhaustion and waits for `completed_generation >= turn.generation` before the
-next batch. Single-root methods retain `finish_download_turn()` and
-`finish_missing_download_turn()` so their final request mutation and handoff
-share one core transaction. These are short `DownloadCoordinator` calls; never
-place a browser or network await inside one.
+`handoff_download_turn()` once at the submission-count boundary or snapshot
+exhaustion and polls the returned exact handoff receipt until linked ingest
+completes before the next batch. Single-root methods retain
+`finish_download_turn()` and `finish_missing_download_turn()` so their final
+request mutation and handoff share one core transaction. These are short
+`VNextDownloadQueueFacade` calls; never place a browser or network await inside
+one.
 
 GID resolution consumes hbrowser's typed `lookup_gid()` result. Only
 `ConfirmedGalleryMissing` may create a removed marker; an empty, malformed,
@@ -59,12 +60,12 @@ downloading. Once any handoff for a turn has already committed, later finish
 calls are mutation-free idempotent replays.
 
 Only `_claim_download_turn()` and `_wait_for_gallery_ingest()` are liveness
-polling boundaries. Retry the backend-neutral `CoordinatorUnavailableError`
+polling boundaries. Retry the backend-neutral `DownloadIngestUnavailableError`
 there after `turn_poll_seconds`. Backend lock detection and database-gate policy
 belong to h2hdb core. Do not apply this retry policy to heartbeat renewal,
 handoff, atomic finish, queue mutation, browser work, or unrelated exceptions.
 
-The root `DownloadRequest` is completed conditionally only after the root
+The root `VNextDownloadRequest` is completed conditionally only after the root
 gallery is resolved and its full related-tag cascade returns successfully.
 Single-root calls delete it in the atomic finish operation; batch roots use the
 live-turn-fenced in-turn completion immediately after traversal returns. A stale
@@ -77,12 +78,17 @@ Related downloads must call `ensure_download_request()` so an existing snapshot
 root token is reused rather than replaced. Only a request newly created by that
 related download may be completed immediately. Before
 `drain_pending_redownloads()` starts any browser or network work, it must walk
-the complete pending snapshot and call `ensure_download_request()` for every
-GID. Keep the returned tokenized requests as the roots processed by that drain;
-do not re-read or replace their tokens later. If seeding is interrupted, roots
-already ensured are recoverable from the durable queue, while roots not yet
-ensured remain in the pending-redownload view. This pre-seeding also fences an
-earlier root's related cascade: when it reaches a later pending GID,
+the complete pending snapshot through h2hdb's typed keyset pages and call
+`ensure_download_request()` for every GID. The first page pins the sealed
+catalog/source revisions and time cutoff; every continuation uses the returned
+cursor until a terminal page arrives. A nonterminal page may contain no GIDs
+when its bounded schedule rows were unmapped or suppressed, so never use item
+emptiness as end-of-scan. Keep the returned tokenized requests as the roots
+processed by that drain; do not re-read or replace their tokens later. If
+seeding is interrupted, roots already ensured are recoverable from the durable
+queue, while roots not yet ensured remain in the pending-redownload view. This
+pre-seeding also fences an earlier root's related cascade: when it reaches a
+later pending GID,
 `ensure_download_request()` finds that root's token and the related-download
 path must not complete it. The later root therefore still executes its own
 cascade before exact-token completion. One `_DownloadBatchContext`
@@ -95,8 +101,8 @@ URL's gid-search fallback belongs to the same root traversal. Keep coordinated
 public wrappers separate from internal traversal helpers so a cascade never
 attempts to claim a nested turn.
 
-Every exceptional root or batch attempts `request_gallery_ingest(turn)`. If
-that conditional handoff returns `False`, raise `DownloadTurnLostError` and
+Every exceptional root or batch attempts `handoff_download_turn(turn)`. If
+that conditional handoff rejects stale authority, raise `DownloadTurnLostError` and
 preserve the original exception as `__cause__`; never re-raise the original as
 though handoff succeeded. Cancellation follows the same path without swallowing
 `CancelledError`. SIGTERM, SIGKILL, simultaneous service shutdown, or database
@@ -122,7 +128,7 @@ one of the two drain methods.
 
 The optional manual CSV queue is a downloader-owned filesystem adapter. When a
 row leaves its GID blank, parse the URL with `GalleryURLParser` and pass the
-normalized positive GID to core; URL parsing is not a `DownloadCoordinator`
+normalized positive GID to core; URL parsing is not a `VNextDownloadQueueFacade`
 responsibility.
 
 ## Communication

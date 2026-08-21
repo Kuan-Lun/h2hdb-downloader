@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from h2h_galleryinfo_parser import GalleryURLParser
-from h2hdb import DownloadRequest
 from hbrowser import (
     ConfirmedGalleryMissing,
     GalleryFound,
@@ -17,6 +16,7 @@ from hbrowser.exceptions import ClientOfflineException, InsufficientFundsExcepti
 
 from h2hdb_downloader import DownloadTurnLostError
 from h2hdb_downloader.downloader import TagCascadePolicy
+from tests.conftest import fake_request, fake_token
 
 if TYPE_CHECKING:
     from h2hdb_downloader.downloader import Downloader
@@ -40,7 +40,7 @@ async def wait_until(condition: Callable[[], bool]) -> None:
     raise AssertionError("condition was not reached")
 
 
-async def test_download_requests_work_before_network_and_completes_on_success(
+async def test_download_request_exists_before_network_and_completes_on_success(
     downloader_factory: Callable[..., Downloader],
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
@@ -59,13 +59,10 @@ async def test_download_requests_work_before_network_and_completes_on_success(
     result = await downloader.download_by_gallery(gallery(1))
 
     assert result == {1: True}
-    assert len(fake_store.accepted_submissions) == 1
-    accepted_gid, accepted_request = fake_store.accepted_submissions[0]
-    assert accepted_gid == 1
-    assert accepted_request is not None
-    assert accepted_request.gid == 1
-    assert fake_store.redownload_time_updates == [1]
     assert fake_store.download_requests == {}
+    # A browser-side acceptance does not advance durable redownload authority;
+    # linked ingest does that only after it commits a source revision.
+    assert fake_store.pending_download_gids == [1]
 
 
 async def test_download_false_keeps_durable_request(
@@ -90,19 +87,19 @@ async def test_newer_request_created_during_download_survives_old_completion(
 ) -> None:
     async def replace_request(target: GalleryURLParser) -> bool:
         old_request = fake_store.download_requests[target.gid]
-        fake_store.download_requests[target.gid] = DownloadRequest(
+        fake_store.download_requests[target.gid] = fake_request(
             target.gid,
             target.url,
             "newer-token",
         )
-        assert old_request.token != "newer-token"
+        assert old_request.request_token != fake_token("newer-token")
         return True
 
     fake_driver.download_result = replace_request
     downloader = downloader_factory()
 
     assert await downloader.download_by_gallery(gallery(1)) == {1: True}
-    assert fake_store.download_requests[1].token == "newer-token"
+    assert fake_store.download_requests[1].request_token == fake_token("newer-token")
 
 
 async def test_download_skips_already_settled_gid_without_hitting_driver(
@@ -140,11 +137,11 @@ async def test_client_offline_retries_and_eventually_succeeds(
     fake_driver: FakeDriver,
 ) -> None:
     attempts = {"count": 0}
-    attempted_tokens = list[str]()
+    attempted_tokens = list[bytes]()
 
     async def flaky(target: GalleryURLParser) -> bool:
         attempts["count"] += 1
-        attempted_tokens.append(fake_store.download_requests[target.gid].token)
+        attempted_tokens.append(fake_store.download_requests[target.gid].request_token)
         if attempts["count"] == 1:
             raise ClientOfflineException("offline")
         return True
@@ -165,7 +162,7 @@ async def test_retry_does_not_overwrite_request_created_while_waiting(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    replacement = DownloadRequest(1, gallery(1).url, "external-token")
+    replacement = fake_request(1, gallery(1).url, "external-token")
 
     async def fail_after_external_request(target: GalleryURLParser) -> bool:
         fake_store.download_requests[target.gid] = replacement
@@ -414,7 +411,7 @@ async def test_application_loop_drains_residual_queue_then_redownloads_pending(
     # Simulate a prior run that left gid 1 requested, while gid 2 is flagged
     # by the DB as needing a periodic redownload.
     fake_store.gids = {1, 2}
-    fake_store.download_requests = {1: DownloadRequest(1, gallery(1).url, "request-1")}
+    fake_store.download_requests = {1: fake_request(1, gallery(1).url, "request-1")}
     fake_store.pending_download_gids = [2]
     fake_driver.lookup_results[2] = GalleryFound(2, gallery(2))
 
@@ -486,16 +483,16 @@ async def test_pending_related_root_reuses_preseeded_token_and_runs_its_cascade(
     fake_driver.gallery_tag_results[(2, "artist")] = [root_two_tag]
     fake_driver.search_results[(root_one_tag.href, "")] = (gallery(2), gallery(3))
     fake_driver.search_results[(root_two_tag.href, "")] = (gallery(4),)
-    root_two_token: str | None = None
+    root_two_token: bytes | None = None
 
     def observe_search(request: SearchRequest) -> None:
         nonlocal root_two_token
         if request.scope_url == root_one_tag.href:
-            root_two_token = fake_store.download_requests[2].token
+            root_two_token = fake_store.download_requests[2].request_token
         else:
             assert request.scope_url == root_two_tag.href
             assert root_two_token is not None
-            assert fake_store.download_requests[2].token == root_two_token
+            assert fake_store.download_requests[2].request_token == root_two_token
 
     fake_driver.search_observer = observe_search
     downloader = downloader_factory(download_submissions_per_ingest=100)
@@ -658,7 +655,7 @@ async def test_drain_queue_url_entry_falls_back_to_gid_search_on_failure(
     """A queued URL never falls back to a gid search by itself, so if the
     direct download fails, drain_queue must retry via gid to let h2hdb learn
     the gallery is gone (rather than silently dropping the queue entry)."""
-    fake_store.download_requests = {1: DownloadRequest(1, gallery(1).url, "request-1")}
+    fake_store.download_requests = {1: fake_request(1, gallery(1).url, "request-1")}
     fake_driver.download_result = False
     fake_driver.lookup_results[1] = ConfirmedGalleryMissing(1, 2)
 
@@ -680,7 +677,7 @@ async def test_drain_queue_url_entry_skips_fallback_when_direct_download_succeed
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(1, gallery(1).url, "request-1")
+    request = fake_request(1, gallery(1).url, "request-1")
     fake_store.download_requests = {1: request}
 
     async def assert_same_request(target: GalleryURLParser) -> bool:
@@ -709,7 +706,7 @@ async def test_drain_queue_bad_stored_url_resolves_the_requested_gid(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(42, stored_url, "request-42")
+    request = fake_request(42, stored_url, "request-42")
     fake_store.download_requests = {42: request}
     fake_driver.lookup_results[42] = GalleryFound(42, gallery(42))
 
@@ -729,7 +726,7 @@ async def test_drain_queue_false_result_keeps_original_request(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(1, gallery(1).url, "request-1")
+    request = fake_request(1, gallery(1).url, "request-1")
     fake_store.download_requests = {1: request}
     fake_driver.download_result = False
     fake_driver.lookup_results[1] = GalleryFound(1, gallery(1))
@@ -746,7 +743,7 @@ async def test_drain_queue_exception_keeps_original_request(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(1, gallery(1).url, "request-1")
+    request = fake_request(1, gallery(1).url, "request-1")
     fake_store.download_requests = {1: request}
 
     async def fail(_gallery: GalleryURLParser) -> bool:
@@ -766,7 +763,7 @@ async def test_drain_queue_search_error_keeps_request_and_hands_off(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(349189, "", "request-349189")
+    request = fake_request(349189, "", "request-349189")
     fake_store.download_requests = {request.gid: request}
 
     error = MalformedSearchPageError(
@@ -798,7 +795,7 @@ async def test_failed_root_reports_turn_loss_when_exception_handoff_is_rejected(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(349189, "", "request-349189")
+    request = fake_request(349189, "", "request-349189")
     fake_store.download_requests = {request.gid: request}
     error = MalformedSearchPageError(
         query="gid:349189",
@@ -829,7 +826,7 @@ async def test_drain_queue_removed_gid_completes_original_request(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(404, "", "request-404")
+    request = fake_request(404, "", "request-404")
     fake_store.download_requests = {404: request}
     fake_driver.lookup_results[404] = ConfirmedGalleryMissing(404, 2)
     downloader = downloader_factory()
@@ -848,8 +845,8 @@ async def test_missing_lookup_cannot_settle_a_newer_request_token(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    stale_request = DownloadRequest(404, "", "request-404")
-    newer_request = DownloadRequest(404, gallery(404).url, "newer-request-404")
+    stale_request = fake_request(404, "", "request-404")
+    newer_request = fake_request(404, gallery(404).url, "newer-request-404")
     fake_store.download_requests = {404: stale_request}
     fake_driver.lookup_results[404] = ConfirmedGalleryMissing(404, 2)
 
@@ -874,7 +871,7 @@ async def test_drain_queue_redirect_success_completes_original_request(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(999, "", "request-999")
+    request = fake_request(999, "", "request-999")
     fake_store.download_requests = {999: request}
     fake_store.gids = {999}
     fake_driver.lookup_results[999] = GalleryFound(999, gallery(1))
@@ -892,7 +889,7 @@ async def test_drain_queue_redirect_failure_keeps_original_request(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    request = DownloadRequest(999, "", "request-999")
+    request = fake_request(999, "", "request-999")
     fake_store.download_requests = {999: request}
     fake_store.gids = {999}
     fake_driver.lookup_results[999] = GalleryFound(999, gallery(1))
@@ -1020,7 +1017,7 @@ async def test_deep_root_request_survives_until_related_cascade_finishes(
     assert seed.gid not in fake_store.download_requests
     assert len(fake_store.claim_download_turn_calls) == 1
     assert len(fake_store.finished_download_turns) == 1
-    assert fake_store.gallery_ingest_requests == []
+    assert len(fake_store.gallery_ingest_requests) == 1
 
 
 async def test_deep_cascade_exception_keeps_root_request_and_hands_off(
@@ -1115,8 +1112,8 @@ async def test_long_deep_root_renews_its_turn_lease(
     assert result == {1: True}
     assert len(fake_store.renew_download_turn_calls) >= 1
     assert all(
-        lease_seconds == 1
-        for _turn, lease_seconds in fake_store.renew_download_turn_calls
+        lease_microseconds == 1_000_000
+        for _turn, lease_microseconds in fake_store.renew_download_turn_calls
     )
 
 
@@ -1191,12 +1188,12 @@ async def test_atomic_finish_does_not_delete_newer_root_request_token(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    newer_request = DownloadRequest(1, gallery(1).url, "newer-token")
+    newer_request = fake_request(1, gallery(1).url, "newer-token")
 
     async def replace_root_request(target: GalleryURLParser) -> bool:
         assert target.gid == 1
         old_request = fake_store.download_requests[1]
-        assert old_request.token != newer_request.token
+        assert old_request.request_token != newer_request.request_token
         fake_store.download_requests[1] = newer_request
         return True
 
@@ -1210,10 +1207,10 @@ async def test_atomic_finish_does_not_delete_newer_root_request_token(
 
     assert fake_store.download_requests == {1: newer_request}
     assert len(fake_store.finished_download_turns) == 1
-    assert fake_store.gallery_ingest_requests == []
+    assert len(fake_store.gallery_ingest_requests) == 1
     assert fake_store.completed_ingest_generation == 1
     _turn, finished_request = fake_store.finished_download_turns[0]
-    assert finished_request.token != newer_request.token
+    assert finished_request.request_token != newer_request.request_token
 
 
 async def test_drain_queue_hands_off_once_after_a_short_final_batch(
@@ -1223,7 +1220,7 @@ async def test_drain_queue_hands_off_once_after_a_short_final_batch(
 ) -> None:
     fake_store.auto_complete_gallery_ingest = False
     fake_store.download_requests = {
-        gid: DownloadRequest(gid, gallery(gid).url, f"request-{gid}") for gid in (1, 2)
+        gid: fake_request(gid, gallery(gid).url, f"request-{gid}") for gid in (1, 2)
     }
     downloader = downloader_factory()
     task = asyncio.create_task(
@@ -1252,7 +1249,7 @@ async def test_submission_threshold_soft_overshoot_finishes_the_whole_root(
     fake_driver: FakeDriver,
 ) -> None:
     fake_store.download_requests = {
-        gid: DownloadRequest(gid, gallery(gid).url, f"request-{gid}")
+        gid: fake_request(gid, gallery(gid).url, f"request-{gid}")
         for gid in range(1, 5)
     }
     expected_download_gids = {1, 2, 3, 4}
@@ -1294,9 +1291,9 @@ async def test_zero_submission_missing_and_keep_roots_do_not_reach_threshold(
     fake_driver: FakeDriver,
 ) -> None:
     requests = {
-        1: DownloadRequest(1, "", "request-1"),
-        2: DownloadRequest(2, gallery(2).url, "request-2"),
-        3: DownloadRequest(3, gallery(3).url, "request-3"),
+        1: fake_request(1, "", "request-1"),
+        2: fake_request(2, gallery(2).url, "request-2"),
+        3: fake_request(3, gallery(3).url, "request-3"),
     }
     fake_store.download_requests = requests.copy()
     fake_driver.lookup_results[1] = ConfirmedGalleryMissing(1, 2)
@@ -1326,11 +1323,10 @@ async def test_stale_snapshot_entry_does_not_consume_a_batch_root_slot(
     fake_driver: FakeDriver,
 ) -> None:
     requests = {
-        gid: DownloadRequest(gid, gallery(gid).url, f"request-{gid}")
-        for gid in (1, 2, 3)
+        gid: fake_request(gid, gallery(gid).url, f"request-{gid}") for gid in (1, 2, 3)
     }
     fake_store.download_requests = requests.copy()
-    replacement = DownloadRequest(2, gallery(2).url, "replacement-2")
+    replacement = fake_request(2, gallery(2).url, "replacement-2")
 
     async def make_second_snapshot_token_stale(target: GalleryURLParser) -> bool:
         if target.gid == 1:
@@ -1358,8 +1354,7 @@ async def test_batch_exception_preserves_current_root_after_settling_prior_root(
     fake_driver: FakeDriver,
 ) -> None:
     requests = {
-        gid: DownloadRequest(gid, gallery(gid).url, f"request-{gid}")
-        for gid in (1, 2, 3)
+        gid: fake_request(gid, gallery(gid).url, f"request-{gid}") for gid in (1, 2, 3)
     }
     fake_store.download_requests = requests.copy()
 
@@ -1389,8 +1384,7 @@ async def test_batch_cancellation_preserves_current_root_after_settling_prior_ro
     fake_driver: FakeDriver,
 ) -> None:
     requests = {
-        gid: DownloadRequest(gid, gallery(gid).url, f"request-{gid}")
-        for gid in (1, 2, 3)
+        gid: fake_request(gid, gallery(gid).url, f"request-{gid}") for gid in (1, 2, 3)
     }
     fake_store.download_requests = requests.copy()
     second_started = asyncio.Event()
@@ -1431,7 +1425,7 @@ async def test_one_heartbeat_spans_a_whole_zero_submission_batch(
     fake_driver: FakeDriver,
 ) -> None:
     fake_store.download_requests = {
-        gid: DownloadRequest(gid, gallery(gid).url, f"request-{gid}") for gid in (1, 2)
+        gid: fake_request(gid, gallery(gid).url, f"request-{gid}") for gid in (1, 2)
     }
     fake_driver.lookup_results = {
         gid: GalleryFound(gid, gallery(gid)) for gid in (1, 2)
@@ -1456,9 +1450,13 @@ async def test_one_heartbeat_spans_a_whole_zero_submission_batch(
     assert result == {1: False, 2: False}
     assert len(fake_store.claim_download_turn_calls) == 1
     assert len(fake_store.renew_download_turn_calls) >= 1
-    assert {turn for turn, _lease_seconds in fake_store.renew_download_turn_calls} == {
-        fake_store.gallery_ingest_requests[0]
-    }
+    handed_off_turn = fake_store.gallery_ingest_requests[0]
+    assert all(
+        turn.generation == handed_off_turn.generation
+        and turn.owner_token == handed_off_turn.owner_token
+        and turn.lease_expires_at < handed_off_turn.lease_expires_at
+        for turn, _lease_microseconds in fake_store.renew_download_turn_calls
+    )
     assert fake_store.completed_download_requests_in_turn == []
 
 
@@ -1467,8 +1465,8 @@ async def test_related_queued_root_is_submitted_once_but_runs_its_later_cascade(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    root_one = DownloadRequest(1, gallery(1).url, "request-1")
-    root_two = DownloadRequest(2, gallery(2).url, "request-2")
+    root_one = fake_request(1, gallery(1).url, "request-1")
+    root_two = fake_request(2, gallery(2).url, "request-2")
     fake_store.download_requests = {1: root_one, 2: root_two}
     tag = cast(
         Tag,
@@ -1513,8 +1511,8 @@ async def test_empty_or_all_stale_snapshot_does_not_claim_a_turn(
 
     assert await downloader.drain_queue(policy) == {}
 
-    stale = DownloadRequest(1, gallery(1).url, "stale-token")
-    current = DownloadRequest(1, gallery(1).url, "current-token")
+    stale = fake_request(1, gallery(1).url, "stale-token")
+    current = fake_request(1, gallery(1).url, "current-token")
     fake_store.download_requests = {1: current}
     monkeypatch.setattr(downloader._queue, "download_requests", lambda: [stale])
 
@@ -1526,7 +1524,7 @@ async def test_lost_turn_rejects_in_turn_settlement_and_preserves_request(
     downloader_factory: Callable[..., Downloader],
     fake_store: FakeDBStore,
 ) -> None:
-    request = DownloadRequest(1, gallery(1).url, "request-1")
+    request = fake_request(1, gallery(1).url, "request-1")
     fake_store.download_requests = {1: request}
 
     def lose_turn_before_settlement() -> None:
@@ -1548,9 +1546,9 @@ async def test_in_turn_completion_does_not_delete_a_newer_root_token(
     fake_store: FakeDBStore,
     fake_driver: FakeDriver,
 ) -> None:
-    stale_request = DownloadRequest(1, gallery(1).url, "request-1")
-    newer_request = DownloadRequest(1, gallery(1).url, "newer-request-1")
-    second_request = DownloadRequest(2, gallery(2).url, "request-2")
+    stale_request = fake_request(1, gallery(1).url, "request-1")
+    newer_request = fake_request(1, gallery(1).url, "newer-request-1")
+    second_request = fake_request(2, gallery(2).url, "request-2")
     fake_store.download_requests = {1: stale_request, 2: second_request}
 
     async def replace_root_token(target: GalleryURLParser) -> bool:

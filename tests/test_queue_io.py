@@ -2,15 +2,16 @@ import csv
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
-from h2hdb import DownloadRequest, DownloadTurn
+from h2hdb import DownloadIngestUnavailableError, VNextDownloadQueueFacade
 
 from h2hdb_downloader._queue import GalleryQueue
+from tests.conftest import fake_request, fake_turn
 
 if TYPE_CHECKING:
-    from .conftest import FakeCoordinator, FakeDBStore
+    from .conftest import FakeDBStore, FakeFacade
 
 
 def claim_paths(path: Path) -> list[Path]:
@@ -195,9 +196,7 @@ def test_crash_claims_replay_in_creation_order(
 def test_durable_request_survives_construction_and_is_read_live(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
-    request = DownloadRequest(
-        1, "https://exhentai.org/g/1/abcdef0123/", "existing-token"
-    )
+    request = fake_request(1, "https://exhentai.org/g/1/abcdef0123/", "existing-token")
     fake_store.download_requests = {1: request}
 
     queue = queue_factory()
@@ -212,7 +211,7 @@ def test_request_download_returns_token_and_completion_is_conditional(
     first = queue.request_download(1, "https://exhentai.org/g/1/abcdef0123/")
     second = queue.request_download(1)
 
-    assert first.token != second.token
+    assert first.request_token != second.request_token
     assert second.url == first.url
 
     queue.complete_download_request(first)
@@ -260,7 +259,7 @@ def test_ensure_download_request_preserves_an_existing_token(
     assert created.request == fake_store.download_requests[2]
 
 
-def test_queue_delegates_request_lifecycle_to_coordinator(
+def test_queue_delegates_request_lifecycle_to_facade(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
     queue = queue_factory()
@@ -271,21 +270,20 @@ def test_queue_delegates_request_lifecycle_to_coordinator(
     assert fake_store.download_requests == {}
 
 
-def test_download_turn_operations_delegate_to_coordinator(
+def test_download_turn_operations_delegate_to_facade(
     queue_factory: Callable[..., GalleryQueue], fake_store: FakeDBStore
 ) -> None:
     queue = queue_factory()
 
     turn = queue.claim_download_turn(lease_seconds=300)
 
-    assert turn is not None
-    assert queue.renew_download_turn(turn, lease_seconds=300)
-    assert queue.completed_gallery_ingest_generation() == 0
-    assert queue.request_gallery_ingest(turn)
-    assert queue.completed_gallery_ingest_generation() == turn.generation
-    assert fake_store.claim_download_turn_calls == [300]
-    assert fake_store.renew_download_turn_calls == [(turn, 300)]
-    assert fake_store.gallery_ingest_state_reads == 2
+    renewed = queue.renew_download_turn(turn, lease_seconds=300)
+    assert renewed.lease_expires_at > turn.lease_expires_at
+    handoff = queue.handoff_download_turn(renewed)
+    assert queue.is_download_handoff_complete(handoff)
+    assert fake_store.claim_download_turn_calls == [300_000_000]
+    assert fake_store.renew_download_turn_calls == [(turn, 300_000_000)]
+    assert fake_store.gallery_ingest_state_reads == 1
 
 
 def test_download_turn_handoff_is_idempotent(
@@ -294,10 +292,10 @@ def test_download_turn_handoff_is_idempotent(
 ) -> None:
     queue = queue_factory()
     turn = queue.claim_download_turn(lease_seconds=300)
-    assert turn is not None
+    first = queue.handoff_download_turn(turn)
+    second = queue.handoff_download_turn(turn)
 
-    assert queue.request_gallery_ingest(turn)
-    assert queue.request_gallery_ingest(turn)
+    assert second == first
 
 
 def test_finish_download_turn_atomically_hands_off_and_completes_exact_request(
@@ -307,12 +305,11 @@ def test_finish_download_turn_atomically_hands_off_and_completes_exact_request(
     queue = queue_factory()
     request = queue.request_download(1)
     turn = queue.claim_download_turn(lease_seconds=300)
-    assert turn is not None
-
-    assert queue.finish_download_turn(turn, request)
+    handoff = queue.finish_download_turn(turn, request)
 
     assert fake_store.download_requests == {}
-    assert fake_store.completed_ingest_generation == turn.generation
+    assert handoff.download_generation == turn.generation
+    assert queue.is_download_handoff_complete(handoff)
 
 
 def test_requests_can_settle_inside_a_live_turn_before_one_batch_handoff(
@@ -323,8 +320,6 @@ def test_requests_can_settle_inside_a_live_turn_before_one_batch_handoff(
     completed_request = queue.request_download(1)
     missing_request = queue.request_download(404)
     turn = queue.claim_download_turn(lease_seconds=300)
-    assert turn is not None
-
     assert queue.complete_download_request_in_turn(turn, completed_request)
     assert queue.complete_missing_download_request_in_turn(
         turn,
@@ -337,8 +332,7 @@ def test_requests_can_settle_inside_a_live_turn_before_one_batch_handoff(
     assert fake_store.handed_off_turn is None
     assert fake_store.active_download_turn == turn
 
-    assert turn is not None
-    assert queue.request_gallery_ingest(turn)
+    queue.handoff_download_turn(turn)
     assert fake_store.completed_ingest_generation == turn.generation
 
 
@@ -347,12 +341,15 @@ def test_stale_download_turn_cannot_renew_or_handoff(
     fake_store: FakeDBStore,
 ) -> None:
     queue = queue_factory()
-    stale_turn = DownloadTurn(99, "stale", 10_000)
+    stale_turn = fake_turn(99, "stale")
     request = queue.request_download(1)
 
-    assert not queue.renew_download_turn(stale_turn, lease_seconds=300)
-    assert not queue.request_gallery_ingest(stale_turn)
-    assert not queue.finish_download_turn(stale_turn, request)
+    with pytest.raises(DownloadIngestUnavailableError):
+        queue.renew_download_turn(stale_turn, lease_seconds=300)
+    with pytest.raises(DownloadIngestUnavailableError):
+        queue.handoff_download_turn(stale_turn)
+    with pytest.raises(DownloadIngestUnavailableError):
+        queue.finish_download_turn(stale_turn, request)
     assert fake_store.download_requests == {1: request}
 
 
@@ -361,10 +358,10 @@ def test_request_identity_uses_gid_and_token_not_mutable_url(
 ) -> None:
     queue = queue_factory()
     request = queue.request_download(1, "https://exhentai.org/g/1/abcdef0123/")
-    fake_store.download_requests[1] = DownloadRequest(
+    fake_store.download_requests[1] = fake_request(
         gid=1,
         url="https://e-hentai.org/g/1/abcdef0123/",
-        token=request.token,
+        token=request.request_token,
     )
 
     assert queue.is_current(request)
@@ -400,9 +397,12 @@ def test_pending_redownload_gids_reads_database_state_live(
 
 
 def test_csv_path_none_disables_manual_queue_without_touching_filesystem(
-    fake_coordinator: FakeCoordinator, tmp_path: Path
+    fake_facade: FakeFacade, tmp_path: Path
 ) -> None:
-    queue = GalleryQueue(coordinator=fake_coordinator, csv_path=None)
+    queue = GalleryQueue(
+        facade=cast(VNextDownloadQueueFacade, fake_facade),
+        csv_path=None,
+    )
 
     assert queue.download_requests() == []
     assert list(tmp_path.iterdir()) == []

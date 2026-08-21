@@ -3,15 +3,16 @@ from pathlib import Path
 
 PRODUCTION_ROOT = Path(__file__).parents[1] / "src" / "h2hdb_downloader"
 ALLOWED_H2HDB_EXPORTS = {
-    "CoordinatorUnavailableError",
-    "DownloadCoordinator",
-    "DownloadRequest",
+    "DownloadHandoff",
+    "DownloadIngestUnavailableError",
     "DownloadTurn",
-    "EnsureDownloadRequestResult",
+    "EnsureDownloadRequestReceipt",
+    "VNextDownloadQueueFacade",
+    "VNextDownloadRequest",
 }
 
 
-def test_production_uses_only_the_download_coordinator_public_boundary() -> None:
+def test_production_uses_only_the_vnext_download_facade_boundary() -> None:
     violations: list[str] = []
 
     for path in sorted(PRODUCTION_ROOT.rglob("*.py")):
