@@ -3,6 +3,11 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with
 code in this repository.
 
+## Branch Policy
+
+- Do not create a development branch or switch to any non-primary branch.
+- Make all development changes directly on `master`.
+
 ## Project overview
 
 `h2hdb-downloader` is a small Python library that automates downloading

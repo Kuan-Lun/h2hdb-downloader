@@ -1,5 +1,10 @@
 # Agent Instructions
 
+## Branch Policy
+
+- Do not create a development branch or switch to any non-primary branch.
+- Make all development changes directly on `master`.
+
 The repository keeps provider-neutral finalization scripts in `scripts/hooks/`.
 Do not create separate copies under an individual agent's configuration
 directory.
