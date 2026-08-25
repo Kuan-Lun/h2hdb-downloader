@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2hdb-downloader"
-version = "0.10.2"
+version = "0.10.3"
 description = "Download gallery and insert into h2hdb"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
@@ -13,7 +13,7 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
     "h2h-galleryinfo-parser>=0.5.3,<0.6",
     "h2hdb>=0.23.0.9,<0.24",
-    "hbrowser>=0.42.4,<0.43",
+    "hbrowser>=0.42.5,<0.43",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
