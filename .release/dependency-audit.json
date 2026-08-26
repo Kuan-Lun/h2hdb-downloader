@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-08-26T08:18:45+00:00",
+  "checked_at": "2026-08-26T09:22:58+00:00",
   "manifest_sha256": "76f1dddce1deea24161ead57f6bb774426b563aef8a55d81de1b9b1207858c90",
   "node": [
     {
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.10.6",
+  "project_version": "0.10.7",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, development, and Node dependencies against global latest releases on 2026-08-26, including hbrowser 0.42.7 above the 0.42.5 lower bound. Every Python latest remains within declared bounds and publishes Python 3.14-compatible files; npm confirms markdownlint-cli2 0.23.2 satisfies its declared range. A clean Python 3.14.1 rebuild selected the latest candidates and passed strict checks, 99 tests, build, and installed-wheel public-API smoke. Existing lower bounds remain valid minimum contracts; no dependency declaration change is required.",
+    "note": "A fresh complete direct build, runtime, development, and Node registry query for this GPL metadata-only release returned the same latest candidates as the earlier same-day clean audit. Applicable upstream release notes were reviewed; every latest candidate remains within the declared ranges and publishes Python 3.14-compatible distributions, including the reviewed hbrowser compatibility lane. Dependency declarations are unchanged, so no compatibility fix is required; the merge gate separately verifies the exact release candidate.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
