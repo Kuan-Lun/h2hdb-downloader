@@ -257,6 +257,5 @@ asyncio.run(main())
 
 ## License
 
-This project is distributed under the terms of the GNU General Public Licence
-(GPL). For detailed licence terms, see the `LICENSE` file included in this
-distribution.
+This project is distributed under the terms of the GNU General Public License
+version 3 (GPLv3). See the included `LICENSE` file for the complete terms.
