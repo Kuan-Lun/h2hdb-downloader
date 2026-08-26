@@ -20,6 +20,7 @@ _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _LEGACY_VERSION_PATTERN = re.compile(r"^(\d+)(?:\.(\d+)){3,}$")
 _IGNORED_PATHS = (
     ".claude/**",
+    ".Codex/**",
     ".github/**",
     ".githooks/**",
     ".gitignore",
@@ -34,6 +35,7 @@ _IGNORED_PATHS = (
     "package.json",
     "scripts/**",
     "tests/**",
+    "verification/**",
 )
 _AUDIT_PATH = ".release/dependency-audit.json"
 
