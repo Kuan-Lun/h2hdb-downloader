@@ -1,3 +1,3 @@
-__all__ = ["Downloader", "DownloadTurnLostError", "TagCascadePolicy"]
+__all__ = ["DownloadTurnLostError", "Downloader", "TagCascadePolicy"]
 
 from .downloader import Downloader, DownloadTurnLostError, TagCascadePolicy

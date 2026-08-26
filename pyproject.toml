@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2hdb-downloader"
-version = "0.10.5"
+version = "0.10.6"
 description = "Download gallery and insert into h2hdb"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
-license = { text = "GNU Affero General Public License v3" }
-requires-python = ">=3.14,<3.15"
+license = { text = "GNU General Public License v3" }
+requires-python = ">=3.14"
 dependencies = [
     "h2h-galleryinfo-parser>=0.5.3,<0.6",
     "h2hdb>=0.23.0.11,<0.24",
@@ -19,17 +19,17 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3.14",
 ]
 
 [project.optional-dependencies]
 dev = [
     "build>=1.5.0",
-    "black>=26.5.1",
+    "hatchling>=1.32.0",
     "ruff>=0.16.4",
     "mypy>=2.3.1",
-    "pymarkdownlnt>=0.9.39",
+    "packaging>=26.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
@@ -42,18 +42,26 @@ Tracker = "https://github.com/Kuan-Lun/h2hdb-downloader/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/h2hdb_downloader"]
 
-[tool.black]
-target-version = ["py314"]
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
-# Mirror flake8's Black-compatible ignore set (see .vscode/settings.json).
-# These pycodestyle rules conflict with Black's formatting choices.
-extend-ignore = ["E203", "E226", "E501"]
+select = ["B", "C4", "E", "F", "I", "PIE", "RUF", "UP"]
+# Ruff format can intentionally retain long URLs, strings, and docstrings.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.14"
+mypy_path = "src"
+files = ["src", "tests"]
+strict = true
+warn_unused_configs = true
+warn_unreachable = true
+
+[tool.h2h.version]
+release-paths = ["LICENSE", "src/**"]

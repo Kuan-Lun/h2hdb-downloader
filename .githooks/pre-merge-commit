@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repository_root="$(git rev-parse --show-toplevel)"
+cd "$repository_root"
+
+primary="$(scripts/detect-primary-branch.sh)"
+current="$(git branch --show-current)"
+[[ "$current" == "$primary" ]] || {
+    printf 'Merge commits are permitted only on primary: %s\n' "$primary" >&2
+    exit 1
+}
+
+scripts/check-version.py --index
+exec scripts/check-full.sh

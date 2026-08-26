@@ -1272,7 +1272,7 @@ async def test_submission_threshold_soft_overshoot_finishes_the_whole_root(
         TagCascadePolicy(filters=("artist",), conditions=())
     )
 
-    assert result == {gid: True for gid in expected_download_gids}
+    assert result == dict.fromkeys(expected_download_gids, True)
     assert len(fake_driver.download_calls) == 10 + 11 + 103 + 1
     assert [
         turn.generation

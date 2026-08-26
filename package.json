@@ -1,0 +1,11 @@
+{
+  "name": "repository-markdown-tooling",
+  "private": true,
+  "scripts": {
+    "check:markdown": "markdownlint-cli2",
+    "format:markdown": "markdownlint-cli2 --fix"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": ">=0.23.2"
+  }
+}

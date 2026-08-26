@@ -21,21 +21,5 @@
     "additionalDirectories": [
       "/tmp"
     ]
-  },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "scripts/hooks/finalize-python.sh"
-          },
-          {
-            "type": "command",
-            "command": "scripts/hooks/finalize-markdown.sh"
-          }
-        ]
-      }
-    ]
   }
 }

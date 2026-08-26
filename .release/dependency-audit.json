@@ -1,0 +1,119 @@
+{
+  "checked_at": "2026-08-26T08:18:45+00:00",
+  "manifest_sha256": "76f1dddce1deea24161ead57f6bb774426b563aef8a55d81de1b9b1207858c90",
+  "node": [
+    {
+      "declared": ">=0.23.2",
+      "latest": "0.23.2",
+      "latest_satisfies": true,
+      "name": "markdownlint-cli2"
+    }
+  ],
+  "project_version": "0.10.6",
+  "python": [
+    {
+      "declared": "hatchling>=1.32.0",
+      "group": "build",
+      "latest": "1.32.0",
+      "latest_satisfies": true,
+      "name": "hatchling",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/hatchling/"
+    },
+    {
+      "declared": "h2h-galleryinfo-parser>=0.5.3,<0.6",
+      "group": "runtime",
+      "latest": "0.5.3",
+      "latest_satisfies": true,
+      "name": "h2h-galleryinfo-parser",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
+    },
+    {
+      "declared": "h2hdb>=0.23.0.11,<0.24",
+      "group": "runtime",
+      "latest": "0.23.0.11",
+      "latest_satisfies": true,
+      "name": "h2hdb",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/h2hdb/"
+    },
+    {
+      "declared": "hbrowser>=0.42.5,<0.43",
+      "group": "runtime",
+      "latest": "0.42.7",
+      "latest_satisfies": true,
+      "name": "hbrowser",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/hbrowser/"
+    },
+    {
+      "declared": "build>=1.5.0",
+      "group": "optional:dev",
+      "latest": "1.5.0",
+      "latest_satisfies": true,
+      "name": "build",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/build/"
+    },
+    {
+      "declared": "hatchling>=1.32.0",
+      "group": "optional:dev",
+      "latest": "1.32.0",
+      "latest_satisfies": true,
+      "name": "hatchling",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/hatchling/"
+    },
+    {
+      "declared": "ruff>=0.16.4",
+      "group": "optional:dev",
+      "latest": "0.16.4",
+      "latest_satisfies": true,
+      "name": "ruff",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/ruff/"
+    },
+    {
+      "declared": "mypy>=2.3.1",
+      "group": "optional:dev",
+      "latest": "2.3.1",
+      "latest_satisfies": true,
+      "name": "mypy",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/mypy/"
+    },
+    {
+      "declared": "packaging>=26.0",
+      "group": "optional:dev",
+      "latest": "26.3",
+      "latest_satisfies": true,
+      "name": "packaging",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/packaging/"
+    },
+    {
+      "declared": "pytest>=9.1.1",
+      "group": "optional:dev",
+      "latest": "9.1.1",
+      "latest_satisfies": true,
+      "name": "pytest",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/pytest/"
+    },
+    {
+      "declared": "pytest-asyncio>=1.4.0",
+      "group": "optional:dev",
+      "latest": "1.4.0",
+      "latest_satisfies": true,
+      "name": "pytest-asyncio",
+      "python_3_14": true,
+      "url": "https://pypi.org/project/pytest-asyncio/"
+    }
+  ],
+  "review": {
+    "note": "Reviewed all direct build, runtime, development, and Node dependencies against global latest releases on 2026-08-26, including hbrowser 0.42.7 above the 0.42.5 lower bound. Every Python latest remains within declared bounds and publishes Python 3.14-compatible files; npm confirms markdownlint-cli2 0.23.2 satisfies its declared range. A clean Python 3.14.1 rebuild selected the latest candidates and passed strict checks, 99 tests, build, and installed-wheel public-API smoke. Existing lower bounds remain valid minimum contracts; no dependency declaration change is required.",
+    "status": "reviewed"
+  },
+  "schema": "h2h.dependency-audit.v1"
+}

@@ -1,40 +1,49 @@
 {
-  // --- Python 分析設定 ---
-  // 關閉 Pylance 型別檢查，統一由 mypy 負責（Pylance 仍提供補完/跳轉等語言服務）。
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "python.analysis.typeCheckingMode": "off",
   "python.analysis.diagnosticSeverityOverrides": {
-    "reportMissingModuleSource": "none",
-    "reportMissingImports": "none"
+    "reportMissingImports": "none",
+    "reportMissingModuleSource": "none"
   },
-  // --- 格式化設定 ---
-  // 使用 Black 作為 Python 的 formatter；Ruff 的 source.fixAll 限制在 Python
-  // 範圍內，避免它對 markdown 等其他檔案叫醒 preview-mode 警告。
-  "editor.formatOnSave": true,
+  "ruff.nativeServer": "on",
+  "ruff.path": [
+    "${workspaceFolder}/.venv/bin/ruff"
+  ],
+  "ruff.interpreter": [
+    "${workspaceFolder}/.venv/bin/python"
+  ],
+  "ruff.configuration": "${workspaceFolder}/pyproject.toml",
+  "ruff.configurationPreference": "filesystemFirst",
   "[python]": {
-    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
     "editor.codeActionsOnSave": {
-      "source.fixAll.ruff": "always"
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
     }
   },
-  "black-formatter.importStrategy": "fromEnvironment",
-  "ruff.importStrategy": "fromEnvironment",
+  "mypy-type-checker.path": [
+    "${workspaceFolder}/.venv/bin/mypy"
+  ],
+  "mypy-type-checker.interpreter": [
+    "${workspaceFolder}/.venv/bin/python"
+  ],
+  "mypy-type-checker.args": [
+    "--config-file=${workspaceFolder}/pyproject.toml"
+  ],
+  "mypy-type-checker.reportingScope": "custom",
+  "mypy-type-checker.preferDaemon": false,
   "[markdown]": {
-    "editor.defaultFormatter": "DavidAnson.vscode-markdownlint"
+    "editor.defaultFormatter": "DavidAnson.vscode-markdownlint",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll.markdownlint": "explicit"
+    }
   },
-  // --- 一般編輯偏好 ---
-  "files.trimTrailingWhitespace": true,
-  "files.insertFinalNewline": true,
+  "markdownlint.configFile": "${workspaceFolder}/.markdownlint-cli2.jsonc",
   "editor.rulers": [
     88
   ],
-  "flake8.args": [
-    "--max-line-length=88",
-    "--ignore=E203,E226,E501,W503,E704"
-  ],
-  // --- mypy 擴充套件 ---
-  // 使用專案虛擬環境中的 mypy，確保 IDE 與 CLI (uv run mypy) 結果一致。
-  "mypy-type-checker.importStrategy": "fromEnvironment",
-  "mypy-type-checker.args": [
-    "--config-file=mypy.ini"
-  ]
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true
 }
