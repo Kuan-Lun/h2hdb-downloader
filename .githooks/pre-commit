@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repository_root="$(git rev-parse --show-toplevel)"
+cd "$repository_root"
+
+primary="$(scripts/detect-primary-branch.sh)"
+current="$(git branch --show-current)"
+
+if [[ "$current" == "$primary" ]]; then
+    printf 'Direct commits on primary are not allowed: %s\n' "$primary" >&2
+    exit 1
+fi
+
+exec scripts/check-fast.sh

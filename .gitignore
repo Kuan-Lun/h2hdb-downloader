@@ -1,19 +1,25 @@
 .*
-__pycache__
-*.pyc
-*.pyo
-*.egg-info
+__pycache__/
+*.py[cod]
+*.egg-info/
 
 !/.gitignore
 !/.github/
-!.github/**
+!/.github/**
 !/.vscode/
-!.vscode/**
-!.claude/
-!.claude/**
+!/.vscode/**
+!/.claude/
+!/.claude/**
+!/.githooks/
+!/.githooks/**
+!/.markdownlint-cli2.jsonc
+!/.release/
+!/.release/**
 !/.Codex/
 !/.Codex/**
 
+node_modules/
+package-lock.json
 uv.lock
 
 # macOS
