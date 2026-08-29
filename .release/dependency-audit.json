@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-08-28T18:41:22+00:00",
-  "manifest_sha256": "4459ac42b61a66366e2136720d33920171881fc74501629a37f8ffe1d194ee78",
+  "checked_at": "2026-08-29T06:30:18+00:00",
+  "manifest_sha256": "1cb3b0c261484ed20c142912cfbf5e0bcafea2a6c08aba6c6ac0271f6c4bcc65",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.11.0",
+  "project_version": "0.12.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,9 +30,9 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.24.0,<0.25",
+      "declared": "h2hdb>=0.25.0,<0.26",
       "group": "runtime",
-      "latest": "0.23.1",
+      "latest": "0.24.0",
       "latest_satisfies": false,
       "name": "h2hdb",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "2026-08-29 full direct build, runtime, development, and Node registry review completed. h2hdb 0.24.0 is the local breaking exact-tree multi-repository candidate; PyPI latest is 0.23.1, so latest_satisfies=false is intentional and does not claim that 0.24.0 is published. All other latest releases satisfy their declared ranges and publish Python 3.14-compatible files. Official notes show build 1.6.0 adds CLI features and robustness fixes, while its removed BuildBackendException exc_info and deprecated build.util helper are unused because this repository only invokes python -m build; Ruff 0.16.5 adds preview-only selectors and ASYNC210, DTZ007, and SIM401 fixes outside the enabled non-preview rule set. Local upstream review shows hbrowser 0.42.8 only hardens process ownership and its short-lived race, while 0.42.9 is test and tooling follow-up; the injected public downloader boundary remains compatible. Remaining candidates are unchanged from the prior reviewed audit; check-fast validates the resolved local tooling separately.",
+    "note": "2026-08-29 full direct build, runtime, development, and Node registry review completed. h2hdb 0.25.0 is the local breaking exact-tree multi-repository candidate; PyPI latest is 0.24.0, so latest_satisfies=false is intentional and does not claim that 0.25.0 is published. All other latest releases satisfy their declared ranges and publish Python 3.14-compatible files. Official notes show build 1.6.0 adds CLI features and robustness fixes, while its removed BuildBackendException exc_info and deprecated build.util helper are unused because this repository only invokes python -m build; Ruff 0.16.5 adds preview-only selectors and ASYNC210, DTZ007, and SIM401 fixes outside the enabled non-preview rule set. Local upstream review shows hbrowser 0.42.8 only hardens process ownership and its short-lived race, while 0.42.9 is test and tooling follow-up; the injected public downloader boundary remains compatible. Remaining candidates are unchanged from the prior reviewed audit; exact-tree cross-repository gates validate the local h2hdb candidate separately.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
