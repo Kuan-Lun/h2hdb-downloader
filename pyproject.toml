@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2hdb-downloader"
-version = "0.10.7"
+version = "0.11.0"
 description = "Download gallery and insert into h2hdb"
 readme = "README.md"
 authors = [{ name = "Kuan-Lun Wang" }]
