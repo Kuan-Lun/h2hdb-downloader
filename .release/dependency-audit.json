@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-08-29T15:44:48+00:00",
-  "manifest_sha256": "166a89f5eff1bcf1e36612e12e360f930d48ded3c6ae8128752953aba3290347",
+  "checked_at": "2026-08-30T17:24:42+00:00",
+  "manifest_sha256": "9dc9ecb590640e5ec79a9547f0bcc8c81a94b135128568854fabd7030c7ee7e3",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.13.0",
+  "project_version": "0.13.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,9 +30,9 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.26.0,<0.27",
+      "declared": "h2hdb>=0.27.0,<0.28",
       "group": "runtime",
-      "latest": "0.25.0",
+      "latest": "0.26.0",
       "latest_satisfies": false,
       "name": "h2hdb",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "2026-08-29 full direct build, runtime, development, and Node registry review completed. h2hdb 0.26.0 is the local breaking exact-tree single-library cohort candidate; PyPI latest is 0.25.0, so latest_satisfies=false is intentional and cross-repository gates validate the local candidate. All other latest releases satisfy their declared ranges and publish Python 3.14-compatible files. build 1.6.0 adds CLI/reporting and robustness fixes, while its removed BuildBackendException exc_info and deprecated build.util helper are unused because this repository invokes python -m build; Ruff 0.16.5 adds preview selectors and ASYNC210, DTZ007, and SIM401 fixes outside the enabled non-preview rule set. Local upstream review confirms hbrowser 0.42.8 only hardened process ownership and its short-lived race, while 0.42.9 is test/tooling follow-up; the injected downloader boundary remains compatible. Remaining candidates are unchanged and the fast gate passes.",
+    "note": "Reviewed the h2hdb 0.27 compatibility-lane update against the sibling core source; downloader uses unchanged public download-queue facades, and all other direct dependency candidates remain within their declared Python 3.14-compatible ranges.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
