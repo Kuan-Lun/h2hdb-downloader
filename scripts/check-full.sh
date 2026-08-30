@@ -29,9 +29,12 @@ UV_CACHE_DIR="$artifact_root/uv-cache" \
     uv pip install --python "$smoke_python" --no-deps "$wheel"
 development_site="$("$repository_root/.venv/bin/python" -c \
     'import sysconfig; print(sysconfig.get_path("purelib"))')"
+development_site_statement="$("$repository_root/.venv/bin/python" -c \
+    'import sys; print(f"import site; site.addsitedir({sys.argv[1]!r})")' \
+    "$development_site")"
 smoke_site="$("$smoke_python" -c \
     'import sysconfig; print(sysconfig.get_path("purelib"))')"
-printf '%s\n' "$development_site" > \
+printf '%s\n' "$development_site_statement" > \
     "$smoke_site/development-dependencies.pth"
 (
     cd "$artifact_root"
