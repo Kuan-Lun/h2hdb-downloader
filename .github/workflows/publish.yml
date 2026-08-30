@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   validate:
-    if: ${{ github.ref_name == github.event.repository.default_branch }}
+    if: >-
+      ${{ github.ref ==
+      format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     outputs:
       bumped: ${{ steps.version.outputs.bumped }}
@@ -28,46 +30,11 @@ jobs:
 
       - name: Check version bump
         id: version
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-          import subprocess
-          import tomllib
-
-          from packaging.version import Version
-
-
-          def project_version(document: str) -> Version:
-              return Version(str(tomllib.loads(document)["project"]["version"]))
-
-
-          current = project_version(
-              Path("pyproject.toml").read_text(encoding="utf-8")
-          )
-          previous_document = subprocess.run(
-              ["git", "show", "HEAD~1:pyproject.toml"],
-              check=False,
-              capture_output=True,
-              text=True,
-          )
-          previous = (
-              project_version(previous_document.stdout)
-              if previous_document.returncode == 0
-              else None
-          )
-          if previous is not None and current < previous:
-              raise SystemExit(
-                  f"project.version decreased from {previous} to {current}"
-              )
-
-          bumped = previous is None or current > previous
-          output_path = Path(os.environ["GITHUB_OUTPUT"])
-          with output_path.open("a", encoding="utf-8") as output:
-              print(f"current={current}", file=output)
-              print(f"previous={previous or ''}", file=output)
-              print(f"bumped={'true' if bumped else 'false'}", file=output)
-          PY
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: >-
+          python scripts/check-publish-version.py
+          --before-revision "${BEFORE_SHA}"
 
       - name: Build distributions
         if: steps.version.outputs.bumped == 'true'
