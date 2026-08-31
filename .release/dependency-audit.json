@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-08-30T17:24:42+00:00",
-  "manifest_sha256": "9dc9ecb590640e5ec79a9547f0bcc8c81a94b135128568854fabd7030c7ee7e3",
+  "checked_at": "2026-08-31T01:43:26+00:00",
+  "manifest_sha256": "65c0d1a12176a9d933a3852220da2db1eda6618d9332ba2c379f0230d74c9d32",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.13.1",
+  "project_version": "0.14.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,9 +30,9 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.27.0,<0.28",
+      "declared": "h2hdb>=0.28.0,<0.29",
       "group": "runtime",
-      "latest": "0.26.0",
+      "latest": "0.27.0",
       "latest_satisfies": false,
       "name": "h2hdb",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed the h2hdb 0.27 compatibility-lane update against the sibling core source; downloader uses unchanged public download-queue facades, and all other direct dependency candidates remain within their declared Python 3.14-compatible ranges.",
+    "note": "Reviewed every direct build, runtime, optional-development, and Node development candidate against current registry metadata and Python 3.14 support. Current candidate releases remain within the declared ranges except h2hdb: local source h2hdb 0.28.0 was validated with this breaking feature, while the registry latest remains 0.27.0; h2hdb 0.28.0 must be published before h2hdb-downloader 0.14.0. Retained the h2h-galleryinfo-parser <0.6, h2hdb <0.29, and hbrowser <0.43 compatibility boundaries.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
