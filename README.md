@@ -1,6 +1,7 @@
 # H2HDB Downloader (h2hdb-downloader)
 
-Automates downloading galleries from exhentai/e-hentai (via `hbrowser`) and
+Automates downloading galleries from exhentai/e-hentai (via
+`hbrowser>=0.44.0,<0.45.0`) and
 recording their state in an `h2hdb` database. It has no CLI or standalone
 runtime of its own — it's a library consumed by another project that owns
 the browser session and the overall process lifecycle.
@@ -47,7 +48,7 @@ the browser session and the overall process lifecycle.
   batch form retains `DOWNLOADING` until the boundary. A newer request fences
   both missing mutations.
 - **Core boundary** — the caller injects h2hdb's public
-  `VNextDownloadQueueFacade` from `h2hdb>=0.28.0,<0.29`.
+  `VNextDownloadQueueFacade` from `h2hdb>=0.29.0,<0.30.0`.
   This package never opens a connector, reaches into a repository, migrates the
   schema, or manages the database gate. Browser search, downloads, retry sleeps,
   and tag traversal remain outside the coordinator's short synchronous calls.
@@ -117,10 +118,9 @@ Downloader(
 ```
 
 The application owns core configuration and startup. Inject an
-`h2hdb>=0.28.0,<0.29` `VNextDownloadQueueFacade` connected to an
+`h2hdb>=0.29.0,<0.30.0` `VNextDownloadQueueFacade` connected to an
 epoch-3/schema-version-2 database; downloader never initializes the schema or
-loads core configuration. The former 0.27/schema-version-1 cohort is not a
-supported compatibility path.
+loads core configuration. Older core compatibility lanes are not supported.
 
 `csv_path` only enables the optional "queue a gid/url by editing a CSV file"
 feature described above. Leave it as `None` if you don't need that; durable
