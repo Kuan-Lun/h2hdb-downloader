@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-01T21:10:07+00:00",
-  "manifest_sha256": "b8c7cfd3af981fed9c4f2969fd21ef5f7bf1bf9a0154ba0c85e0dd55e3f9ffe1",
+  "checked_at": "2026-09-03T21:15:40+00:00",
+  "manifest_sha256": "de2a4100938858ba95488f24f55218e4ac53decaad6c18106149761641ebc01a",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.15.0",
+  "project_version": "0.16.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,9 +30,9 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.29.0,<0.30.0",
+      "declared": "h2hdb>=0.30.0,<0.31.0",
       "group": "runtime",
-      "latest": "0.28.3",
+      "latest": "0.29.0",
       "latest_satisfies": false,
       "name": "h2hdb",
       "python_3_14": true,
@@ -68,7 +68,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.5",
+      "latest": "0.16.6",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed hbrowser 0.43 process-ownership and 0.44 authentication breaking release commits; downloader uses the Driver context lifecycle, which still owns post-login homepage navigation, and all 105 tests pass against the hbrowser 0.44.0 source checkout. The release intentionally drops hbrowser 0.42 and requires hbrowser 0.44, and h2hdb 0.29 is source-integrated.",
+    "note": "Compatibility lane 0.16 intentionally drops h2hdb 0.29 and requires h2hdb 0.30 because the core generated manifest changed and existing databases must be rebuilt. The downloader uses only the public VNextDownloadQueueFacade and immutable queue values; its 105 offline tests pass against the exact local h2hdb 0.30 candidate source. Reviewed all direct build, runtime, optional-development, and Node development registry candidates and their Python 3.14 support; existing upper bounds continue to delimit intentionally separate compatibility lanes.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
