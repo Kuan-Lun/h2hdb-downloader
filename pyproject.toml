@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "h2h-galleryinfo-parser>=0.5.3,<0.6",
-    "h2hdb>=0.30.0,<0.31.0",
+    "h2hdb>=0.31.0,<0.32.0",
     "hbrowser>=0.44.0,<0.45.0",
 ]
 classifiers = [
