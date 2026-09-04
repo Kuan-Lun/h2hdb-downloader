@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-03T21:15:40+00:00",
-  "manifest_sha256": "de2a4100938858ba95488f24f55218e4ac53decaad6c18106149761641ebc01a",
+  "checked_at": "2026-09-04T12:14:16+00:00",
+  "manifest_sha256": "75ad4a69ee8bd1bb3d6b3040efeef6a6564723208557b89b1862fe867cd03236",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.16.0",
+  "project_version": "0.17.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,7 +30,7 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.30.0,<0.31.0",
+      "declared": "h2hdb>=0.31.0,<0.32.0",
       "group": "runtime",
       "latest": "0.29.0",
       "latest_satisfies": false,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Compatibility lane 0.16 intentionally drops h2hdb 0.29 and requires h2hdb 0.30 because the core generated manifest changed and existing databases must be rebuilt. The downloader uses only the public VNextDownloadQueueFacade and immutable queue values; its 105 offline tests pass against the exact local h2hdb 0.30 candidate source. Reviewed all direct build, runtime, optional-development, and Node development registry candidates and their Python 3.14 support; existing upper bounds continue to delimit intentionally separate compatibility lanes.",
+    "note": "Compatibility lane 0.17 intentionally drops h2hdb 0.30 and requires h2hdb 0.31 because the core manifest now includes immutable storage-instance binding and older schema databases must be rebuilt. Downloader still uses only the public VNextDownloadQueueFacade and immutable queue values; all 105 offline tests plus sdist, wheel, and installed-wheel export smoke passed against exact local h2hdb 0.31.0 source commit 1a256b3. Reviewed every direct build, runtime, optional-development, and Node development registry candidate for Python 3.14 and compatibility; existing upper bounds continue to delimit intentionally separate compatibility lanes.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
