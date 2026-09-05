@@ -185,3 +185,12 @@ def test_publish_workflow_passes_the_pre_push_revision_to_the_checker() -> None:
         "format('refs/heads/{0}', github.event.repository.default_branch)" in workflow
     )
     assert "github.ref_name == github.event.repository.default_branch" not in workflow
+
+
+def test_publish_workflow_uses_declared_packaging_dependencies() -> None:
+    workflow = (_PROJECT_ROOT / ".github" / "workflows" / "publish.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "python scripts/install-ci-dependencies.py packaging build" in workflow
+    assert "pip install --upgrade packaging build" not in workflow
