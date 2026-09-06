@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-04T12:14:16+00:00",
-  "manifest_sha256": "75ad4a69ee8bd1bb3d6b3040efeef6a6564723208557b89b1862fe867cd03236",
+  "checked_at": "2026-09-06T07:42:34+00:00",
+  "manifest_sha256": "592adbb0f4892080d4ab02396aea434937380be83e35d61a1e6ed97808308190",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.17.0",
+  "project_version": "0.18.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,9 +30,9 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.31.0,<0.32.0",
+      "declared": "h2hdb>=0.33.0,<0.34.0",
       "group": "runtime",
-      "latest": "0.29.0",
+      "latest": "0.32.1",
       "latest_satisfies": false,
       "name": "h2hdb",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Compatibility lane 0.17 intentionally drops h2hdb 0.30 and requires h2hdb 0.31 because the core manifest now includes immutable storage-instance binding and older schema databases must be rebuilt. Downloader still uses only the public VNextDownloadQueueFacade and immutable queue values; all 105 offline tests plus sdist, wheel, and installed-wheel export smoke passed against exact local h2hdb 0.31.0 source commit 1a256b3. Reviewed every direct build, runtime, optional-development, and Node development registry candidate for Python 3.14 and compatibility; existing upper bounds continue to delimit intentionally separate compatibility lanes.",
+    "note": "Reviewed every direct Python build, runtime, optional-development and Node dependency for 0.18.0. Registry candidates outside declared bounds were included. All non-core latest releases remain identical to the previously reviewed receipt and installed environment; no additional dependency changes are needed. The core bound >=0.33.0,<0.34.0 deliberately replaces older compatibility lanes and requires a freshly rebuilt epoch-3/schema-version-4 database. Registry h2hdb 0.32.1 is older than this new lower bound; reviewed the local core 0.33 schema/API changes and validated the explicit unpublished wheel with SHA256 62456066515988841377da679bd597161cce27b1bb0426d500635dcab290d677. All 71 installed core package files match that wheel, uv pip check passes, and 6 SQLite coordination and public-facade boundary tests passed against it. Consumers continue to use only public core facades and immutable values. This dependency review does not replace the required full merge gate and does not claim deep or live-MariaDB consumer coverage.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
