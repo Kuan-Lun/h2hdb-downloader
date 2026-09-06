@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
 
@@ -19,15 +19,24 @@ from tests.conftest import fake_token, fake_turn
 
 
 @pytest.fixture
-def sqlite_facade(tmp_path: Path) -> VNextDownloadQueueFacade:
+def sqlite_facade(tmp_path: Path) -> Iterator[VNextDownloadQueueFacade]:
     config = CoreConfig(
         database=DatabaseConfig(
             sql_type="sqlite",
             database=str(tmp_path / "coordination.sqlite3"),
         )
     )
-    VNextDatabaseAdminFacade(config).initialize()
-    return VNextDownloadQueueFacade(config)
+    admin = VNextDatabaseAdminFacade(config)
+    initialized = admin.initialize()
+    assert (initialized.epoch, initialized.schema_version, initialized.state) == (
+        3,
+        5,
+        "READY",
+    )
+    yield VNextDownloadQueueFacade(config)
+    checked = admin.check()
+    assert checked.manifest_sha256 == initialized.manifest_sha256
+    assert (checked.epoch, checked.schema_version, checked.state) == (3, 5, "READY")
 
 
 def make_downloader(facade: VNextDownloadQueueFacade) -> Downloader:

@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-06T07:42:34+00:00",
-  "manifest_sha256": "592adbb0f4892080d4ab02396aea434937380be83e35d61a1e6ed97808308190",
+  "checked_at": "2026-09-06T16:15:51+00:00",
+  "manifest_sha256": "835b2976588b016ce0990e71b16254983deeb863bfa1effb3e7c0a2f696336ab",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.18.0",
+  "project_version": "0.19.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,10 +30,10 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.33.0,<0.34.0",
+      "declared": "h2hdb>=0.35.0,<0.36.0",
       "group": "runtime",
-      "latest": "0.32.1",
-      "latest_satisfies": false,
+      "latest": "0.35.0",
+      "latest_satisfies": true,
       "name": "h2hdb",
       "python_3_14": true,
       "url": "https://pypi.org/project/h2hdb/"
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct Python build, runtime, optional-development and Node dependency for 0.18.0. Registry candidates outside declared bounds were included. All non-core latest releases remain identical to the previously reviewed receipt and installed environment; no additional dependency changes are needed. The core bound >=0.33.0,<0.34.0 deliberately replaces older compatibility lanes and requires a freshly rebuilt epoch-3/schema-version-4 database. Registry h2hdb 0.32.1 is older than this new lower bound; reviewed the local core 0.33 schema/API changes and validated the explicit unpublished wheel with SHA256 62456066515988841377da679bd597161cce27b1bb0426d500635dcab290d677. All 71 installed core package files match that wheel, uv pip check passes, and 6 SQLite coordination and public-facade boundary tests passed against it. Consumers continue to use only public core facades and immutable values. This dependency review does not replace the required full merge gate and does not claim deep or live-MariaDB consumer coverage.",
+    "note": "Reviewed all 11 Python direct build/runtime/development requirements and the Node direct development requirement for 0.19.0, including registry candidates outside declared bounds. All non-core latest releases are unchanged from the prior reviewed receipt; no additional dependency changes are required. Registry h2hdb advanced from 0.32.1 to 0.35.0 and now satisfies the new >=0.35.0,<0.36.0 lane. Reviewed the local core 0.35 catalog tag-order and publication-bundle changes and its epoch-3/schema-version-5 contract; downloader continues to use only the unchanged public download facade and immutable values. Installed that explicitly supplied local core and verified uv pip check (43 installed packages), six targeted SQLite coordination/public-facade tests including schema-5 initialization and full post-operation admin.check, and the complete fast gate. Older core/schema compatibility is intentionally removed; rebuild prior databases into fresh schema-5 databases through the owning ingest integration. This audit does not replace the required full merge gate or claim live-network, live-MariaDB, or deep coverage.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
