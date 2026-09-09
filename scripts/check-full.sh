@@ -38,6 +38,5 @@ printf '%s\n' "$development_site_statement" > \
     "$smoke_site/development-dependencies.pth"
 (
     cd "$artifact_root"
-    "$smoke_python" -I -c \
-        'import h2hdb_downloader, pathlib, sys; assert pathlib.Path(h2hdb_downloader.__file__).resolve().is_relative_to(pathlib.Path(sys.prefix).resolve()); from h2hdb_downloader import DownloadTurnLostError, Downloader, TagCascadePolicy; assert Downloader and TagCascadePolicy and DownloadTurnLostError'
+    "$smoke_python" -I "$repository_root/scripts/check-installed-wheel.py"
 )
