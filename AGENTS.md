@@ -206,4 +206,5 @@ exports 是 `Downloader`、`TagCascadePolicy` 與
 - queue token、heartbeat、handoff、replay、cancellation、confirmed-missing、
   snapshot cursor 與 at-least-once boundary 變更都必須有 regression tests。
 - `scripts/check-full.sh` 執行完整離線 pytest、sdist/wheel build，以及從
-  installed wheel 驗證三個公開 exports。
+  installed wheel 驗證三個公開 exports 與其 active runtime dependency metadata
+  是否符合實際安裝版本；不得僅依賴 `--no-deps` 安裝後 import 成功。

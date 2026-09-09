@@ -30,13 +30,13 @@ def sqlite_facade(tmp_path: Path) -> Iterator[VNextDownloadQueueFacade]:
     initialized = admin.initialize()
     assert (initialized.epoch, initialized.schema_version, initialized.state) == (
         3,
-        5,
+        6,
         "READY",
     )
     yield VNextDownloadQueueFacade(config)
     checked = admin.check()
     assert checked.manifest_sha256 == initialized.manifest_sha256
-    assert (checked.epoch, checked.schema_version, checked.state) == (3, 5, "READY")
+    assert (checked.epoch, checked.schema_version, checked.state) == (3, 6, "READY")
 
 
 def make_downloader(facade: VNextDownloadQueueFacade) -> Downloader:
