@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-_LEGACY_VERSION_PATTERN = re.compile(r"^(\d+)(?:\.(\d+)){3,}$")
 _IGNORED_PATHS = (
     ".claude/**",
     ".Codex/**",
@@ -99,7 +98,7 @@ def _matches(path: str, patterns: tuple[str, ...] | list[str]) -> bool:
 def _parse_version(value: str) -> tuple[int, int, int]:
     match = _VERSION_PATTERN.fullmatch(value)
     if match is None:
-        raise ValueError(f"candidate version must use X.Y.Z: {value}")
+        raise ValueError(f"project version must use X.Y.Z: {value}")
     return tuple(int(part) for part in match.groups())
 
 
@@ -181,6 +180,7 @@ def main() -> int:
     candidate_document = _load_toml(candidate_tree)
     base_version_text = str(base_document["project"]["version"])
     candidate_version_text = str(candidate_document["project"]["version"])
+    base_version = _parse_version(base_version_text)
     candidate_version = _parse_version(candidate_version_text)
 
     changed_paths = tuple(
@@ -226,18 +226,12 @@ def main() -> int:
     )
     feature = bool(re.search(r"^feat(?:\([^\n)]+\))?:", messages, re.MULTILINE))
 
-    base_match = _VERSION_PATTERN.fullmatch(base_version_text)
-    if base_match is not None:
-        base_version = tuple(int(part) for part in base_match.groups())
-        expected = _expected_version(base_version, breaking=breaking, feature=feature)
-        if candidate_version != expected:
-            expected_text = ".".join(str(part) for part in expected)
-            raise ValueError(
-                "expected project version "
-                f"{expected_text}, got {candidate_version_text}"
-            )
-    elif _LEGACY_VERSION_PATTERN.fullmatch(base_version_text) is None:
-        raise ValueError(f"unsupported base version: {base_version_text}")
+    expected = _expected_version(base_version, breaking=breaking, feature=feature)
+    if candidate_version != expected:
+        expected_text = ".".join(str(part) for part in expected)
+        raise ValueError(
+            f"expected project version {expected_text}, got {candidate_version_text}"
+        )
     _validate_audit(candidate_tree, candidate_document, candidate_version_text)
     return 0
 
