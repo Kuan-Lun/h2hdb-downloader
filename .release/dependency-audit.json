@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-09T01:45:46+00:00",
-  "manifest_sha256": "90489f0ee6603807713724de4ae7564bdf4ff3bb8dbd1c8463f06114c638a0ce",
+  "checked_at": "2026-09-11T08:59:57+00:00",
+  "manifest_sha256": "72ef666d0c9720f92397b39b111c772e7f5b243625c543bb9de846747c918a4a",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.20.0",
+  "project_version": "0.20.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,9 +30,9 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.36.0,<0.37.0",
+      "declared": "h2hdb>=0.36.0,<0.38.0",
       "group": "runtime",
-      "latest": "0.36.0",
+      "latest": "0.37.0",
       "latest_satisfies": true,
       "name": "h2hdb",
       "python_3_14": true,
@@ -50,7 +50,7 @@
     {
       "declared": "build>=1.5.0",
       "group": "optional:dev",
-      "latest": "1.6.0",
+      "latest": "1.6.1",
       "latest_satisfies": true,
       "name": "build",
       "python_3_14": true,
@@ -68,7 +68,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.6",
+      "latest": "0.16.7",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 11 direct Python build/runtime/development requirements and the Node development requirement for 0.20.0, including candidates outside the declared bounds. All latest registry candidates satisfy the resulting requirements and advertise Python 3.14 support. Compared with the reviewed 0.19.0 receipt, only h2hdb advanced from 0.35.0 to 0.36.0 and hbrowser from 0.44.0 to 0.44.1; all other direct versions are unchanged. Reviewed core 0.36.0 schema6 source qualification changes and unchanged public download queue facade contracts. This release intentionally requires h2hdb>=0.36.0,<0.37.0 and removes the older schema5 compatibility lane; downloader never initializes or migrates databases. Reviewed hbrowser 0.44.1 upstream commit 68052ed2f7463392bcc5ed59f93bde35de8567f1 and README: the optional HBROWSER_CHROME_EXECUTABLE path skips automatic Chrome installation when configured while preserving the public browser API. The latest hbrowser remains within the existing >=0.44.0,<0.45.0 requirement. Installed the current core0.36.0 and hbrowser0.44.1 registry releases through the full dependency resolver; uv pip check passed for 43 installed packages. Nine focused tests passed, including actual schema6 SQLite administration and public queue coordination, active dependency metadata validation, rejection of the old core upper bound, missing dependency rejection, and inactive development-extra handling. The complete fast gate passed. The isolated installed-wheel smoke now validates its active runtime Requires-Dist entries against installed versions before accepting the three public exports, so --no-deps cannot conceal this conflict. This review does not replace the required full merge gate or claim live browser, account, network, MariaDB, or full multi-role Linux cohort verification. References: https://github.com/Kuan-Lun/hbrowser/commit/68052ed2f7463392bcc5ed59f93bde35de8567f1 ; https://pypi.org/project/h2hdb/0.36.0/ ; https://pypi.org/project/hbrowser/0.44.1/ .",
+    "note": "Reviewed all 11 direct Python build/runtime/development requirements (10 unique packages) and the Node development requirement, including registry latest candidates outside existing upper bounds. Compared with the 0.20.0 receipt, h2hdb advanced 0.36.0 to 0.37.0, build 1.6.0 to 1.6.1, and Ruff 0.16.6 to 0.16.7; all other latest candidates are unchanged and remain accepted. Reviewed core commit 56301e5 and the complete diff from core 0.36.0 release commit 2985015: source adapters gain gallery_exists/discard_gallery_observation and source preparation gains waiting counts, outside downloader's public queue boundary. Independently byte-compared installed registry core0.36.0 with the published core0.37.0 wheel: vnext_facade.py, domain.py, vnext_queue_repository.py, vnext_download_ingest_repository.py, and _generated_vnext_schema.py are identical. Retain h2hdb>=0.36.0 and admit 0.37 under <0.38.0; future lanes remain unverified. No public downloader behavior, schema, or compatibility path is removed, so 0.20.1 is compatible. Reviewed upstream build1.6.1 changelog (Windows symlink-probe regression fix and docs) and Ruff0.16.7 release notes (preview rules, quote/fix correctness, rule diagnostics, and performance); no repository policy relaxation is needed. Installed build1.6.1 and Ruff0.16.7 through the full resolver. Core0.36.0 validation: scripts/check-fast.sh passed, .venv/bin/pytest passed all 123 tests including actual epoch3/schema6 SQLite public queue coordination, and uv pip check validated 43 packages. Published core0.37.0 validation: full dependency resolution succeeded, uv pip check validated 43 packages, and .venv/bin/pytest tests/test_runtime_dependencies.py tests/test_sqlite_coordination_polling.py tests/test_core_public_boundary.py passed all 10 tests. Regression explicitly rejects the former <0.37 upper bound with installed core0.37 metadata and validates both accepted boundaries and the excluded 0.38 lane. Build1.6.1 successfully built the 0.20.1 sdist and wheel via python -m build --no-isolation. All latest registry candidates satisfy the final declarations and Python candidates advertise Python3.14 support. This review precedes and does not replace the canonical staged-candidate full merge gate. It does not claim live browser/account/network, MariaDB, Docker, or multi-role Linux cohort validation. References: https://raw.githubusercontent.com/pypa/build/1.6.1/CHANGELOG.rst ; https://github.com/astral-sh/ruff/releases/tag/0.16.7 ; https://pypi.org/project/h2hdb/0.37.0/ .",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
