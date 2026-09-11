@@ -32,17 +32,30 @@ def test_current_manifest_accepts_the_installed_core_cohort() -> None:
         Requirement(item) for item in dependencies if Requirement(item).name == "h2hdb"
     )
     assert "0.36.0" in core.specifier
+    assert "0.37.0" in core.specifier
     assert "0.35.5" not in core.specifier
-    assert "0.37.0" not in core.specifier
+    assert "0.38.0" not in core.specifier
     assert version("h2hdb") in core.specifier
     _check()(dependencies)
 
 
-def test_smoke_rejects_the_previous_upper_bound_with_installed_new_core() -> None:
-    with pytest.raises(
-        RuntimeError, match=r"does not satisfy h2hdb>=0\.35\.0,<0\.36\.0"
-    ):
-        _check()(("h2hdb>=0.35.0,<0.36.0",))
+@pytest.mark.parametrize(
+    ("installed_core", "previous_requirement"),
+    [
+        ("0.36.0", "h2hdb>=0.35.0,<0.36.0"),
+        ("0.37.0", "h2hdb>=0.36.0,<0.37.0"),
+    ],
+)
+def test_smoke_rejects_the_previous_upper_bound_with_new_core(
+    monkeypatch: pytest.MonkeyPatch,
+    installed_core: str,
+    previous_requirement: str,
+) -> None:
+    monkeypatch.setattr("importlib.metadata.version", lambda _name: installed_core)
+    with pytest.raises(RuntimeError, match="does not satisfy") as error:
+        _check()((previous_requirement,))
+    assert previous_requirement in str(error.value)
+    assert f"h2hdb=={installed_core}" in str(error.value)
 
 
 def test_smoke_rejects_missing_runtime_dependency_and_ignores_inactive_dev_extra() -> (
