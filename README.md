@@ -48,7 +48,7 @@ the browser session and the overall process lifecycle.
   batch form retains `DOWNLOADING` until the boundary. A newer request fences
   both missing mutations.
 - **Core boundary** — the caller injects h2hdb's public
-  `VNextDownloadQueueFacade` from `h2hdb>=0.36.0,<0.38.0`.
+  `VNextDownloadQueueFacade` from `h2hdb>=0.36.0,<0.39.0`.
   This package never opens a connector, reaches into a repository, migrates the
   schema, or manages the database gate. Browser search, downloads, retry sleeps,
   and tag traversal remain outside the coordinator's short synchronous calls.
@@ -118,11 +118,12 @@ Downloader(
 ```
 
 The application owns core configuration and startup. Inject an
-`h2hdb>=0.36.0,<0.38.0` `VNextDownloadQueueFacade` connected to a freshly
+`h2hdb>=0.36.0,<0.39.0` `VNextDownloadQueueFacade` connected to a freshly
 created epoch-3/schema-version-6 database; downloader never initializes the
-schema or loads core configuration. Core 0.36 and 0.37 share this queue facade
-and schema contract; core 0.37 changes source adapter APIs that downloader does
-not use. Databases from core versions before 0.36 remain unsupported because
+schema or loads core configuration. Core 0.36, 0.37, and 0.38 share this queue
+facade and schema contract; the ingest adapter and administration API changes
+in these lanes do not affect this consumer. Databases from core versions before
+0.36 remain unsupported because
 their catalog manifest differs; rebuild them from source into a new empty
 database before constructing the facade.
 
