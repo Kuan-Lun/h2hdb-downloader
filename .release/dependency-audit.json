@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-11T08:59:57+00:00",
-  "manifest_sha256": "72ef666d0c9720f92397b39b111c772e7f5b243625c543bb9de846747c918a4a",
+  "checked_at": "2026-09-14T01:42:49+00:00",
+  "manifest_sha256": "f28eece73f711b5efa5376368003a48a18414bfd4bf8934c6e1892d1602510e7",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.20.1",
+  "project_version": "0.20.2",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,9 +30,9 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.36.0,<0.38.0",
+      "declared": "h2hdb>=0.36.0,<0.39.0",
       "group": "runtime",
-      "latest": "0.37.0",
+      "latest": "0.37.3",
       "latest_satisfies": true,
       "name": "h2hdb",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 11 direct Python build/runtime/development requirements (10 unique packages) and the Node development requirement, including registry latest candidates outside existing upper bounds. Compared with the 0.20.0 receipt, h2hdb advanced 0.36.0 to 0.37.0, build 1.6.0 to 1.6.1, and Ruff 0.16.6 to 0.16.7; all other latest candidates are unchanged and remain accepted. Reviewed core commit 56301e5 and the complete diff from core 0.36.0 release commit 2985015: source adapters gain gallery_exists/discard_gallery_observation and source preparation gains waiting counts, outside downloader's public queue boundary. Independently byte-compared installed registry core0.36.0 with the published core0.37.0 wheel: vnext_facade.py, domain.py, vnext_queue_repository.py, vnext_download_ingest_repository.py, and _generated_vnext_schema.py are identical. Retain h2hdb>=0.36.0 and admit 0.37 under <0.38.0; future lanes remain unverified. No public downloader behavior, schema, or compatibility path is removed, so 0.20.1 is compatible. Reviewed upstream build1.6.1 changelog (Windows symlink-probe regression fix and docs) and Ruff0.16.7 release notes (preview rules, quote/fix correctness, rule diagnostics, and performance); no repository policy relaxation is needed. Installed build1.6.1 and Ruff0.16.7 through the full resolver. Core0.36.0 validation: scripts/check-fast.sh passed, .venv/bin/pytest passed all 123 tests including actual epoch3/schema6 SQLite public queue coordination, and uv pip check validated 43 packages. Published core0.37.0 validation: full dependency resolution succeeded, uv pip check validated 43 packages, and .venv/bin/pytest tests/test_runtime_dependencies.py tests/test_sqlite_coordination_polling.py tests/test_core_public_boundary.py passed all 10 tests. Regression explicitly rejects the former <0.37 upper bound with installed core0.37 metadata and validates both accepted boundaries and the excluded 0.38 lane. Build1.6.1 successfully built the 0.20.1 sdist and wheel via python -m build --no-isolation. All latest registry candidates satisfy the final declarations and Python candidates advertise Python3.14 support. This review precedes and does not replace the canonical staged-candidate full merge gate. It does not claim live browser/account/network, MariaDB, Docker, or multi-role Linux cohort validation. References: https://raw.githubusercontent.com/pypa/build/1.6.1/CHANGELOG.rst ; https://github.com/astral-sh/ruff/releases/tag/0.16.7 ; https://pypi.org/project/h2hdb/0.37.0/ .",
+    "note": "Reviewed all 11 Python and 1 Node direct requirement entries, including latest registry candidates beyond declared bounds. The only changed registry candidate since the previous reviewed receipt is h2hdb 0.37.3; the remaining external candidates and their release-note reviews are unchanged and all current candidates satisfy their declared bounds and support Python 3.14. Compared core 0.37.0 through 0.37.3: public domain values and catalog/queue facades are unchanged. The 0.38.0 candidate changes administration provisioning results and ingest internals, while the downloader public queue contract and schema epoch 3/version 6 are unchanged. Verified local core 0.38.0 wheel SHA-256 5266df990ffbe753817c6f4a7ade0ab5aea31b186bd8fedda30f05cba969d232 in an independently rebuilt environment; consumer editable and core wheel origins were checked. Widened the core requirement to >=0.36.0,<0.39.0, retaining previously verified queue-compatible lanes without a shim or data migration. Added regression coverage rejecting the previous upper bound with installed core 0.38.0. Full offline check-full.sh passed Ruff, formatter, strict mypy, Markdown, all 124 tests including real SQLite queue/coordination, sdist-to-wheel build and isolated installed-runtime-requirements/public-export smoke. All latest external dependencies were installed through the complete resolver; no live account or network runtime was exercised. The final merge gate and complete deployment cohort evidence are reported separately.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
