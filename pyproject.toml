@@ -13,8 +13,8 @@ license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "h2h-galleryinfo-parser>=0.5.3,<0.6",
-    # Core 0.36/0.37 share the validated public queue and schema-6 contract.
-    "h2hdb>=0.36.0,<0.38.0",
+    # Core 0.36/0.37/0.38 share the validated public queue and schema-6 contract.
+    "h2hdb>=0.36.0,<0.39.0",
     "hbrowser>=0.44.0,<0.45.0",
 ]
 classifiers = [
