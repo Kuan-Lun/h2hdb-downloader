@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-14T01:42:49+00:00",
-  "manifest_sha256": "f28eece73f711b5efa5376368003a48a18414bfd4bf8934c6e1892d1602510e7",
+  "checked_at": "2026-09-15T12:10:40+00:00",
+  "manifest_sha256": "15bd1cb42faae3530cfb8e7ad7edc1b985a9d4aca9356d403be69f4d0b17bf36",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.20.2",
+  "project_version": "0.21.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,10 +30,10 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.36.0,<0.39.0",
+      "declared": "h2hdb>=0.39.0,<0.40.0",
       "group": "runtime",
-      "latest": "0.37.3",
-      "latest_satisfies": true,
+      "latest": "0.38.3",
+      "latest_satisfies": false,
       "name": "h2hdb",
       "python_3_14": true,
       "url": "https://pypi.org/project/h2hdb/"
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 11 Python and 1 Node direct requirement entries, including latest registry candidates beyond declared bounds. The only changed registry candidate since the previous reviewed receipt is h2hdb 0.37.3; the remaining external candidates and their release-note reviews are unchanged and all current candidates satisfy their declared bounds and support Python 3.14. Compared core 0.37.0 through 0.37.3: public domain values and catalog/queue facades are unchanged. The 0.38.0 candidate changes administration provisioning results and ingest internals, while the downloader public queue contract and schema epoch 3/version 6 are unchanged. Verified local core 0.38.0 wheel SHA-256 5266df990ffbe753817c6f4a7ade0ab5aea31b186bd8fedda30f05cba969d232 in an independently rebuilt environment; consumer editable and core wheel origins were checked. Widened the core requirement to >=0.36.0,<0.39.0, retaining previously verified queue-compatible lanes without a shim or data migration. Added regression coverage rejecting the previous upper bound with installed core 0.38.0. Full offline check-full.sh passed Ruff, formatter, strict mypy, Markdown, all 124 tests including real SQLite queue/coordination, sdist-to-wheel build and isolated installed-runtime-requirements/public-export smoke. All latest external dependencies were installed through the complete resolver; no live account or network runtime was exercised. The final merge gate and complete deployment cohort evidence are reported separately.",
+    "note": "Reviewed all 11 Python and 1 Node direct requirement entries, including registry candidates outside declared bounds. The only changed direct candidate since the previous reviewed receipt is h2hdb 0.38.3; all external candidates and their prior release-note reviews are unchanged and support Python 3.14. Reviewed the local upstream core release history from 0.37.3 through 0.38.3 and the 0.39.0 schema-7 implementation: the injected public queue facade remains intact, while schema admission now requires epoch 3/version 7. Require h2hdb>=0.39.0,<0.40.0 instead of keeping older schema-6 lanes or a runtime compatibility shim. Registry core 0.38.3 is intentionally below this coordinated unreleased candidate; validation used the explicitly supplied h2hdb 0.39.0 wheel SHA-256 b3756eb80768c60ae44290b92ad8deefde15a4311397f31eefb300e3e543fb0c. Installed that wheel and editable downloader[dev] together through the complete upgrading resolver, verified wheel/editable origins, and uv pip check accepted all 43 installed packages. The resolver also refreshed transitive ast-serialize to 0.11.2 and wrapt to 2.4.1. All 161 offline tests passed with actual core 0.39.0, including real SQLite queue/turn coordination and dependency-regression rejection of the previous upper bound. Ruff, formatter, strict mypy and Markdown checks passed. The downloader library keeps injected facade ownership and has no new startup, schema migration, browser/network, or archive behavior. Core provides and independently validates the one-time offline schema-6-to-7 conversion preserving database facts and CBZ files. Final exact integration runs the repository check-full merge hook, including the sdist/wheel build and isolated installed-runtime-requirements/public-export check; that gate result is reported separately. No live account or network runtime is exercised.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
