@@ -48,7 +48,7 @@ the browser session and the overall process lifecycle.
   batch form retains `DOWNLOADING` until the boundary. A newer request fences
   both missing mutations.
 - **Core boundary** — the caller injects h2hdb's public
-  `VNextDownloadQueueFacade` from `h2hdb>=0.36.0,<0.39.0`.
+  `VNextDownloadQueueFacade` from `h2hdb>=0.39.0,<0.40.0`.
   This package never opens a connector, reaches into a repository, migrates the
   schema, or manages the database gate. Browser search, downloads, retry sleeps,
   and tag traversal remain outside the coordinator's short synchronous calls.
@@ -118,14 +118,15 @@ Downloader(
 ```
 
 The application owns core configuration and startup. Inject an
-`h2hdb>=0.36.0,<0.39.0` `VNextDownloadQueueFacade` connected to a freshly
-created epoch-3/schema-version-6 database; downloader never initializes the
-schema or loads core configuration. Core 0.36, 0.37, and 0.38 share this queue
-facade and schema contract; the ingest adapter and administration API changes
-in these lanes do not affect this consumer. Databases from core versions before
-0.36 remain unsupported because
-their catalog manifest differs; rebuild them from source into a new empty
-database before constructing the facade.
+`h2hdb>=0.39.0,<0.40.0` `VNextDownloadQueueFacade` connected to an
+admitted epoch-3/schema-version-7 database. Downloader never initializes the
+schema or loads core configuration. The deployment entry point uses core's
+quick READY check; ingest owns scheduled full audits and explicit core `check`
+remains available. Queue/turn validation still runs on every relevant operation.
+An exact schema-6 database can be converted by core's one-use offline
+`scripts/upgrade-audit-schema.py` with all consumers stopped and a verified
+backup. The conversion retains database facts and CBZ files; normal startup
+never imports that script or automatically upgrades an older database.
 
 `csv_path` only enables the optional "queue a gid/url by editing a CSV file"
 feature described above. Leave it as `None` if you don't need that; durable
