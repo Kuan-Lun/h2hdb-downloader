@@ -46,6 +46,8 @@
   ancestor，不要求 task branch 仍直接基於目前 primary tip。
 - merge conflict 或 gate failure 時必須 abort merge 並保留 task branch。
 - merge 後收到的任何 follow-up 都建立新的 task branch。
+- primary 不得 rebase；pull 只允許 fast-forward，同步不得改寫既有 merge
+  commits。Task branch 整合仍使用 `--no-ff`，由 `pre-rebase` hook 保護 primary。
 - 本機 task branch、commit、`--no-ff` merge 與 `branch -d` 已獲預先
   授權。
 - fetch、pull、push、remote branch、tag、release、publish、deploy 與任何
