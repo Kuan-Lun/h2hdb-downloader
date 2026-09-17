@@ -140,14 +140,17 @@ def test_direct_rebase_cannot_rewrite_primary(
 ) -> None:
     merge = _merge_task(git_fixture)
     command: tuple[str, ...] = ("rebase", "origin/" + git_fixture.primary)
-    if target == "tag-shadow":
-        git_fixture.git("tag", git_fixture.primary)
-    elif target != "current":
-        git_fixture.git("switch", "task/change")
-        branch = git_fixture.primary
-        if target == "qualified":
-            branch = f"refs/heads/{branch}"
-        command += (branch,)
+    match target:
+        case "tag-shadow":
+            git_fixture.git("tag", git_fixture.primary)
+        case "current":
+            pass
+        case _:
+            git_fixture.git("switch", "task/change")
+            branch = git_fixture.primary
+            if target == "qualified":
+                branch = f"refs/heads/{branch}"
+            command += (branch,)
 
     error = git_fixture.git(*command, succeeds=False)
 
