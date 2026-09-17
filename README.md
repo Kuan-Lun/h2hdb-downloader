@@ -1,269 +1,218 @@
-# H2HDB Downloader (h2hdb-downloader)
+# H2HDB Downloader
 
-Automates downloading galleries from exhentai/e-hentai (via
-`hbrowser>=0.44.0,<0.45.0`) and
-recording their state in an `h2hdb` database. It has no CLI or standalone
-runtime of its own — it's a library consumed by another project that owns
-the browser session and the overall process lifecycle.
+H2HDB Downloader submits E-Hentai and ExHentai galleries to H@H and keeps
+resumable download requests in an h2hdb database. It can process a manual CSV
+queue, revisit galleries marked for redownload, and download related works by
+artist or group.
 
-## Concepts
+This is a Python library. It has no standalone command-line application or
+background service: use it from a Python program that chooses what to download
+and when to run. Browser access comes from `hbrowser`; an h2hdb ingest process
+handles the files delivered by H@H.
 
-- **Gallery** — a single exhentai/e-hentai gallery, identified by a `gid`
-  (numeric id) and represented as `h2h_galleryinfo_parser.GalleryURLParser`
-  once its URL is known.
-- **Dedup** — before issuing a real network download, the package reads live
-  h2hdb state to see if the gid is already settled (downloaded, with no
-  redownload flag or durable request). Settled gids are skipped — except
-  periodically, at a random interval (1 to 19 attempts), when one is
-  force-redownloaded as an integrity re-check.
-- **Durable requests** — immediately before a real download starts, the
-  package creates a tokenized request through h2hdb's normalized operational
-  queue facade.
-  It conditionally completes that exact token only after success. A `False`
-  result, exception, cancellation, or process termination leaves resumable
-  work behind, while a newer request for the same gid cannot be erased by
-  an older attempt finishing late. h2hdb also uses this table to publish a
-  redownload request after all active deletion-candidate folders for a gid
-  have actually disappeared. For a deep root job, success means that the
-  root gallery has resolved and its entire related-tag cascade has returned
-  successfully; the root request remains queued throughout that traversal.
-  Before `drain_pending_redownloads()` performs any browser or network work, it
-  walks its entire pending snapshot and calls `ensure_download_request()` for
-  every GID, turning each item into a durable tokenized root request. If the
-  process stops during this seeding pass, already seeded roots are recoverable
-  through the durable queue and unseeded roots remain in the pending-redownload
-  view. Pre-seeding also means an earlier root's cascade reuses, rather than
-  completes, the token belonging to a later pending root; that later root still
-  runs its own cascade before its token is settled.
-  A public single-root call performs exact-token deletion and the
-  download-to-ingest handoff in one transaction. A `drain_queue()` batch
-  instead checkpoints each returned root through its still-live turn, then
-  performs one handoff at the batch boundary. A late worker that has lost its
-  turn therefore cannot delete the recovered root request. If another caller
-  has replaced the request token while the turn is still valid, that newer
-  request remains queued. A GID is recorded as removed only from hbrowser's
-  explicit `ConfirmedGalleryMissing` result, never by interpreting an empty or
-  malformed page. Missing-marker writes and exact-token deletion are atomic;
-  the single-root form includes the handoff in that transaction, while the
-  batch form retains `DOWNLOADING` until the boundary. A newer request fences
-  both missing mutations.
-- **Core boundary** — the caller injects h2hdb's public
-  `VNextDownloadQueueFacade` from `h2hdb>=0.39.0,<0.40.0`.
-  This package never opens a connector, reaches into a repository, migrates the
-  schema, or manages the database gate. Browser search, downloads, retry sleeps,
-  and tag traversal remain outside the coordinator's short synchronous calls.
-- **Ingest backpressure** — each public deep-download root still owns one h2hdb
-  download turn, while `drain_queue()` and `drain_pending_redownloads()` group
-  complete roots until at least `download_submissions_per_ingest` unique H@H
-  submissions have been accepted. This is a soft threshold checked only after
-  an indivisible root and its entire related-tag cascade return: if consecutive
-  roots submit 10, 11, and 103 galleries with a threshold of 100, all three
-  finish and the batch hands off with 124 submissions. A root that produces no
-  accepted submission does not advance the threshold. A heartbeat spans the
-  entire root or batch. Between batch roots, successful and confirmed-missing
-  dispositions are persisted through the live turn fence without releasing
-  `DOWNLOADING`; unresolved roots stay queued. The batch also hands off at
-  snapshot exhaustion. Failures and cancellation attempt one immediate handoff
-  without removing the interrupted root. If the process or container is killed
-  before it can do so, lease expiry lets h2hdb recover and scan already
-  published files. Each completed root is a durable checkpoint, so restarting
-  discards only the process-local submission count, not correctness. Related
-  downloads atomically reuse an existing request token instead of replacing a
-  later snapshot root, and one drain snapshot remembers accepted GIDs so
-  overlapping cascades neither resubmit nor recount them before ingest. This
-  coordination uses only short core calls; browser work never holds a database
-  transaction. Backend-neutral temporary unavailability is retried only at the
-  ready-turn claim and completed-generation polling boundaries; backend lock
-  handling remains inside h2hdb core.
-- **External submission semantics** — H@H is treated as an uncontrollable
-  external downloader. If it accepts a submission and this process stops before
-  the corresponding database checkpoint commits, the next run may submit that
-  GID again. Queue and ingest state remain correct, but H@H submission is
-  deliberately at-least-once rather than exactly-once.
-- **Manual queue** — add a `(gid, url)` row to the CSV configured by
-  `csv_path`. It is converted into the same durable request and picked up
-  the next time the queue is drained. Before replay, the inbox is atomically
-  rotated to a same-directory hidden claim file; interrupted claims are
-  replayed automatically on the next run. A blank GID is derived from the URL
-  with `GalleryURLParser` before the request reaches core. When both fields are
-  present, the URL must identify the same GID; malformed or mismatched rows are
-  rejected before their claim is acknowledged.
-- **Deep download** — download a gallery, then look at its `artist`/`group`
-  tags and download sibling galleries that match a set of search conditions
-  (e.g. other-language releases of the same work).
+## Requirements and installation
 
-## API
+- Python 3.14 or newer.
+- An E-Hentai account with access to the site you use, an available H@H client,
+  and any funds required for archive downloads.
+- A configured h2hdb database and a running ingest process for coordinated
+  downloads. This package does not create or upgrade the database.
+- A working browser environment supported by
+  [HBrowser](https://github.com/Kuan-Lun/hbrowser#readme).
 
-`Downloader` is the public service object. `TagCascadePolicy` and
-`DownloadTurnLostError` are the other public exports. Every method either acts
-on a target you explicitly pass in or, for the two queue-reading methods below,
-hands back a plain value with no further bookkeeping required from you.
-There is no "run the whole thing" method: deciding when to stop, what order
-to process things in, and how to report progress is the calling
-application's job, not the library's.
+Install into your Python environment:
 
-```python
-Downloader(
-    driver: ExHDriver,         # an un-entered driver; see below
-    facade: VNextDownloadQueueFacade, # initialized public h2hdb facade
-    csv_path: str | None = None,  # path to the manual download-queue CSV
-    *,
-    wait4client: int,       # seconds to wait before retrying after ClientOfflineException
-    retry2download: int,    # seconds to wait before retrying after InsufficientFundsException
-    turn_poll_seconds: float = 5,       # wait interval for a turn / ingest completion
-    turn_lease_seconds: int = 300,      # recoverable ownership lease
-    turn_heartbeat_seconds: float = 60, # renewal interval; shorter than the lease
-    download_submissions_per_ingest: int = 100, # accepted unique submissions
-)
+```bash
+python -m pip install h2hdb-downloader
 ```
 
-The application owns core configuration and startup. Inject an
-`h2hdb>=0.39.0,<0.40.0` `VNextDownloadQueueFacade` connected to an
-admitted epoch-3/schema-version-7 database. Downloader never initializes the
-schema or loads core configuration. The deployment entry point uses core's
-quick READY check; ingest owns scheduled full audits and explicit core `check`
-remains available. Queue/turn validation still runs on every relevant operation.
-An exact schema-6 database can be converted by core's one-use offline
-`scripts/upgrade-audit-schema.py` with all consumers stopped and a verified
-backup. The conversion retains database facts and CBZ files; normal startup
-never imports that script or automatically upgrades an older database.
+To install this checkout instead, run `python -m pip install .` from its root.
+The package declares compatible `h2hdb` and `hbrowser` dependency versions;
+let the installer resolve them together. This release uses h2hdb schema version
+7 (epoch 3). Follow the [h2hdb setup instructions](https://github.com/Kuan-Lun/h2hdb#readme)
+to prepare the database and configuration file before running the example.
 
-`csv_path` only enables the optional "queue a gid/url by editing a CSV file"
-feature described above. Leave it as `None` if you don't need that; durable
-database requests and live deduplication still work.
+Set browser credentials in your script's environment. For Bash or Zsh:
 
-The turn timing defaults normally need no adjustment. All three timing values
-must be positive and finite, `turn_lease_seconds` must be an integer, and the
-heartbeat interval must be shorter than the lease.
-`download_submissions_per_ingest` must be a positive integer. It counts unique
-GIDs for which `driver.download()` returned `True` during the current batch; it
-does not measure H@H processing time or materialized gallery folders. The
-threshold is soft because a root and its cascade are never split. Roots with no
-accepted submission do not advance it.
-
-Coordinated methods raise `DownloadTurnLostError` if their lease can no longer
-be renewed or the conditional handoff proves that another process owns the
-turn. Callers may catch it separately from browser/download failures; the
-durable root request for unfinished work remains available for a later retry.
-
-`Downloader` is itself an async context manager that opens and closes the
-browser session for you, so `driver` is expected un-entered:
-
-```python
-async with Downloader(ExHDriver(headless=False), ...) as downloader:
-    ...
+```bash
+export EH_USERNAME='your_username'
+export EH_PASSWORD='your_password'
+export USE_TOR=0
 ```
 
-If you'd rather manage the driver's lifecycle yourself, pass an
-already-entered driver and skip `async with downloader`.
+For PowerShell:
 
-Method names follow one rule throughout: no suffix means it operates
-directly on a `GalleryURLParser` you already have; `_by_gid` means it
-resolves a bare gid through hbrowser's exact typed lookup first, then does the same
-thing.
+```powershell
+$env:EH_USERNAME = 'your_username'
+$env:EH_PASSWORD = 'your_password'
+$env:USE_TOR = '0'
+```
 
-- `await download_by_gallery(target)` — download one `GalleryURLParser`, or
-  an iterable of them. Returns `{gid: downloaded}` for each. Retries
-  automatically on `ClientOfflineException` (waits `wait4client` seconds)
-  and `InsufficientFundsException` (waits `retry2download` seconds); a wait
-  of `0` means "don't retry, raise immediately." This is a direct API and
-  does not claim a download turn or wait for h2hdb ingest.
-- `await download_by_gid(gid)` — resolve a bare gid through hbrowser's exact
-  lookup, then download it. Only an explicit, independently confirmed missing
-  result is recorded as removed in h2hdb; challenge, authentication, malformed,
-  pagination, navigation, and bounded-search failures raise and leave the
-  request retryable. A later successful lookup clears any stale removed
-  marker. If the gid resolves to a *different* gid (the gallery was
-  merged/redirected), the original gid is flagged for deletion after the
-  replacement downloads successfully. This is also a direct, uncoordinated
-  API.
-- `await download_by_tag(tag, conditions)` — download every gallery under a
-  `hbrowser` `Tag`, once per search condition in `conditions` (or
-  unconditionally if `conditions` is empty). This is also a direct,
-  uncoordinated API.
-- `await deep_download_by_gallery(gallery, policy, skip_check=False)` —
-  download `gallery`, then for each tag in `policy.filters` (e.g.
-  `"artist"`, `"group"`) on that gallery, call `download_by_tag` with
-  `policy.conditions`. The cascade only runs if the initial download
-  actually happened, unless `skip_check=True` forces it to run regardless
-  (useful when you already know the gallery is downloaded from a separate
-  call and just want the cascade). `policy` is a
-  `TagCascadePolicy(filters, conditions)` — both fields always travel
-  together, so they're grouped into one frozen value object rather than two
-  parallel parameters. The whole call is one coordinated root: it claims a
-  turn, keeps its durable root request until the cascade finishes, atomically
-  finishes the exact request while handing the turn to h2hdb, and waits for
-  that generation to be ingested.
-- `await deep_download_by_gid(gid, policy, skip_check=False)` — same
-  gid-resolution as `download_by_gid`, but deep and coordinated as one root.
-- `await drain_queue(policy, skip_check=True)` — absorb the manual CSV and
-  process one live snapshot of durable database requests. A request is
-  removed only after a successful root and complete related-tag cascade,
-  confirmed removal, or successful redirect. Complete roots share one download
-  turn, heartbeat, handoff, and h2hdb ingest wait until their accepted unique
-  H@H submissions reach the soft `download_submissions_per_ingest` threshold.
-  A URL-to-gid fallback remains part of its root traversal. Stale snapshot
-  tokens are skipped without claiming a turn, and the method does not loop for
-  newly queued work after its snapshot. If a malformed or mismatched URL is
-  encountered despite the write-boundary validation, it is ignored and the
-  original requested GID is resolved safely.
-- `await drain_pending_redownloads(policy, skip_check=True)` — process one live
-  snapshot of GIDs h2hdb flags for periodic redownload. It first seeds every
-  snapshot GID as a durable tokenized request, before any browser/network work,
-  then uses the same submission-count batching, indivisible-root semantics,
-  durable checkpoints, and final ingest barrier as `drain_queue()`. An
-  interrupted seed pass leaves seeded GIDs in the durable queue and unseeded
-  GIDs pending. Newly flagged GIDs wait for the next call.
-- `pending_redownload_gids()` — a snapshot list of gids h2hdb currently
-  flags as needing a periodic redownload. Every call reads live database
-  state through bounded, revision-and-cutoff-pinned keyset pages; read-only and
-  safe to call repeatedly. Empty intermediate pages do not truncate the scan.
-  Prefer
-  `drain_pending_redownloads()` when processing the whole snapshot so it can
-  share ingest barriers across roots.
+`USE_TOR=0` selects a direct connection. If omitted, HBrowser may use a detected
+Tor installation. Keep credentials out of your Python files and version
+control. Start with a visible browser so you can handle login challenges;
+unattended setup and optional FlareSolverr configuration are described in the
+HBrowser README.
 
-## Example
+## Process your download queue
 
-The calling application owns the loop. A typical one drains the durable queue
-once, then drains one pending-redownload snapshot. Both operations apply the
-same accepted-submission soft threshold:
+Save this as `download_queue.py` beside your configured `h2hdb-config.json`,
+then run `python download_queue.py`:
 
 ```python
 import asyncio
-from h2hdb_downloader import Downloader, TagCascadePolicy
-from h2hdb import VNextDownloadQueueFacade, load_config
-from hbrowser import ExHDriver
-from h2h_galleryinfo_parser import GalleryURLParser
 
+from h2hdb import VNextDownloadQueueFacade, load_config
+from h2hdb_downloader import Downloader, TagCascadePolicy
+from hbrowser import ExHDriver
+
+
+async def main() -> None:
+    facade = VNextDownloadQueueFacade(load_config("h2hdb-config.json"))
+    try:
+        async with Downloader(
+            ExHDriver(headless=False),
+            facade=facade,
+            csv_path="todownload_gids.csv",
+            wait4client=30 * 60,
+            retry2download=4 * 60 * 60,
+            download_submissions_per_ingest=100,
+        ) as downloader:
+            # Empty filters process only the galleries you queued.
+            policy = TagCascadePolicy(filters=(), conditions=())
+            results = await downloader.drain_queue(policy)
+            for gid, submitted in results.items():
+                print(gid, submitted)
+    finally:
+        facade.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+`Downloader` opens and closes the browser session. Pass it a driver that has
+not already been entered. If your application already manages an active driver,
+pass that driver and call downloader methods without entering a second context.
+
+The example processes one snapshot of queued work, waits for ingest after each
+batch, and exits. New requests added after that snapshot wait for the next run.
+A returned `True` means the gallery submission was accepted; it is not a local
+file path. `False` means no submission succeeded in that operation, including
+cases where a gallery was skipped or unavailable.
+
+## Add galleries with a CSV file
+
+Create `todownload_gids.csv` with the following two columns. Replace the sample
+IDs and URL with your targets:
+
+```csv
+gid,url
+123,https://exhentai.org/g/123/456/
+666,
+,https://exhentai.org/g/789/abc/
+```
+
+- A GID alone is looked up through the browser.
+- A URL alone supplies its GID automatically.
+- When both are present, they must identify the same gallery.
+- Each row must have exactly two fields. GIDs must be positive integers.
+
+The CSV is an inbox: imported rows move into the database queue and disappear
+from the inbox. A missing inbox file is created automatically; its parent
+directory must already exist. Hidden files named `.todownload_gids.csv.claim-*`
+are interrupted imports and are replayed automatically on the next run. Keep
+those files until replay succeeds. A malformed row raises an error; correct the
+reported inbox or claim file before trying again.
+
+Set `csv_path=None` if you only use requests already in the database.
+
+## Download related works and redownloads
+
+To follow the queued gallery's artist and group tags, replace the empty policy
+with:
+
+```python
 policy = TagCascadePolicy(
     filters=("artist", "group"),
     conditions=("language:chinese$", "language:speechless$"),
 )
-
-
-async def main():
-    facade = VNextDownloadQueueFacade(load_config("h2hdb-config.json"))
-    async with Downloader(
-        ExHDriver(headless=True),
-        facade=facade,
-        csv_path="todownload_gids.csv",
-        wait4client=30 * 60,
-        retry2download=4 * 60 * 60,
-        download_submissions_per_ingest=100,
-    ) as downloader:
-        gallery = GalleryURLParser("https://exhentai.org/g/123/456/")
-        await downloader.download_by_gallery(gallery)
-        await downloader.download_by_gid(666)
-        await downloader.deep_download_by_gallery(gallery, policy)
-
-        await downloader.drain_queue(policy, skip_check=True)
-        await downloader.drain_pending_redownloads(policy, skip_check=True)
-
-
-asyncio.run(main())
 ```
+
+Each condition runs as a separate search under each matching tag. Empty
+`conditions` means no additional search restriction, so check the policy before
+starting a potentially large download.
+
+Use these methods inside the active downloader context:
+
+| Task | Call |
+| --- | --- |
+| Process the current durable and CSV queue | `await downloader.drain_queue(policy)` |
+| Process the current pending-redownload list | `await downloader.drain_pending_redownloads(policy)` |
+| Download one GID and its related works | `await downloader.deep_download_by_gid(gid, policy)` |
+| Download a known gallery URL and related works | `await downloader.deep_download_by_gallery(gallery, policy)` |
+| Inspect pending redownload IDs without downloading | `downloader.pending_redownload_gids()` |
+
+For URL-based methods, construct `gallery` with
+`h2h_galleryinfo_parser.GalleryURLParser(url)`. Deep methods normally follow
+related tags only when the root gallery was downloaded. Pass `skip_check=True`
+to follow its tags even if the root was already downloaded; queue-draining
+methods use this setting by default.
+
+Coordinated methods take turns with ingest and wait for it to finish. With the
+default `download_submissions_per_ingest=100`, a queue batch hands off after at
+least 100 unique submissions or when its snapshot is exhausted. The current
+gallery and all its related downloads finish before that threshold is checked,
+so a batch can exceed 100. This setting counts accepted submissions, not
+completed files or elapsed time.
+
+For applications that manage their own ingest scheduling,
+`download_by_gallery(gallery)`, `download_by_gid(gid)`, and
+`download_by_tag(tag, conditions)` submit directly without claiming a download
+turn or waiting for ingest. Prefer the coordinated methods above when sharing
+a database with ingest.
+
+## Retry settings and recovery
+
+The two required retry settings are in seconds:
+
+| Setting | Effect |
+| --- | --- |
+| `wait4client` | Delay before retrying when the H@H client is offline. Use `0` to raise immediately. |
+| `retry2download` | Delay before retrying when the account has insufficient funds. Use `0` to raise immediately. |
+| `turn_poll_seconds` | Interval while waiting for a download turn or ingest completion; default `5`. |
+| `turn_lease_seconds` | Recoverable download-turn lease; default `300`. |
+| `turn_heartbeat_seconds` | Lease renewal interval; default `60`, and must be shorter than the lease. |
+
+The turn timing values must be positive and finite; the lease and
+`download_submissions_per_ingest` must be positive integers. Usually the defaults
+need no adjustment.
+
+Interrupted or failed queued work remains available for a later run. Only a
+confirmed missing-gallery result marks a gallery removed; login, challenge,
+search, or navigation errors are failures to retry after their cause is fixed.
+Already downloaded galleries are usually skipped unless requested again or
+marked for redownload; periodic rechecks can still submit a settled gallery.
+
+H@H may accept a request immediately before the program stops. Restarting can
+therefore submit that gallery again. Submission is at least once; the library
+does not promise that a gallery is submitted exactly once.
+
+| Symptom | What to do |
+| --- | --- |
+| Waiting indefinitely for a turn or ingest | Check that the ingest process is running against the same database and is making progress. |
+| `DownloadTurnLostError` | Stop the current operation; unfinished queued work can be retried in a later run. Check for competing workers or delayed lease renewal. |
+| Login or challenge error | Retry with `headless=False` and verify the account, route, and HBrowser settings. |
+| H@H offline or insufficient funds | Restore the client or balance, or set the corresponding retry delay to `0` to handle the error in your application. |
+| CSV parsing error | Check the two-column format, positive GIDs, and URL/GID agreement, including any retained claim file. |
+| Database schema rejected | Follow h2hdb's setup or offline upgrade instructions. Downloader does not upgrade an existing database. |
+
+For browser diagnostics and optional logging, see the HBrowser README. When
+reporting a problem, include package versions, the failing operation, and a
+sanitized exception; do not include credentials or private account pages.
+Report issues through the
+[issue tracker](https://github.com/Kuan-Lun/h2hdb-downloader/issues).
 
 ## License
 
-This project is distributed under the terms of the GNU General Public License
-version 3 (GPLv3). See the included `LICENSE` file for the complete terms.
+Licensed under GPL-3.0-only. See [LICENSE](LICENSE).
