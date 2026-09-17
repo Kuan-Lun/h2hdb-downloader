@@ -19,30 +19,31 @@ def test_production_uses_only_the_vnext_download_facade_boundary() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         relative_path = path.relative_to(PRODUCTION_ROOT.parent)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == "h2hdb" or alias.name.startswith("h2hdb."):
+            match node:
+                case ast.Import():
+                    for alias in node.names:
+                        if alias.name == "h2hdb" or alias.name.startswith("h2hdb."):
+                            violations.append(
+                                f"{relative_path}:{node.lineno}: import {alias.name}"
+                            )
+                case ast.ImportFrom():
+                    module = node.module or ""
+                    if module.startswith("h2hdb."):
                         violations.append(
-                            f"{relative_path}:{node.lineno}: import {alias.name}"
+                            f"{relative_path}:{node.lineno}: from {module} import ..."
                         )
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                if module.startswith("h2hdb."):
+                    elif module == "h2hdb":
+                        unexpected = {
+                            alias.name for alias in node.names
+                        } - ALLOWED_H2HDB_EXPORTS
+                        for name in sorted(unexpected):
+                            violations.append(
+                                f"{relative_path}:{node.lineno}: "
+                                f"non-boundary h2hdb export {name}"
+                            )
+                case ast.Attribute(attr="database_gate"):
                     violations.append(
-                        f"{relative_path}:{node.lineno}: from {module} import ..."
+                        f"{relative_path}:{node.lineno}: consumer-owned database_gate"
                     )
-                elif module == "h2hdb":
-                    unexpected = {
-                        alias.name for alias in node.names
-                    } - ALLOWED_H2HDB_EXPORTS
-                    for name in sorted(unexpected):
-                        violations.append(
-                            f"{relative_path}:{node.lineno}: "
-                            f"non-boundary h2hdb export {name}"
-                        )
-            elif isinstance(node, ast.Attribute) and node.attr == "database_gate":
-                violations.append(
-                    f"{relative_path}:{node.lineno}: consumer-owned database_gate"
-                )
 
     assert violations == []
