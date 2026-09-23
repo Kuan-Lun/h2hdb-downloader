@@ -30,13 +30,24 @@ def sqlite_facade(tmp_path: Path) -> Iterator[VNextDownloadQueueFacade]:
     initialized = admin.initialize()
     assert (initialized.epoch, initialized.schema_version, initialized.state) == (
         3,
-        7,
+        8,
         "READY",
     )
-    yield VNextDownloadQueueFacade(config)
-    checked = admin.check()
-    assert checked.manifest_sha256 == initialized.manifest_sha256
-    assert (checked.epoch, checked.schema_version, checked.state) == (3, 7, "READY")
+    facade = VNextDownloadQueueFacade(config)
+    try:
+        yield facade
+    finally:
+        facade.close()
+        try:
+            checked = admin.check()
+            assert checked.manifest_sha256 == initialized.manifest_sha256
+            assert (checked.epoch, checked.schema_version, checked.state) == (
+                3,
+                8,
+                "READY",
+            )
+        finally:
+            admin.close()
 
 
 def make_downloader(facade: VNextDownloadQueueFacade) -> Downloader:
@@ -79,6 +90,26 @@ def test_queue_wrappers_use_public_core_sqlite_facade(
     assert sqlite_facade.get_download_request(1) is None
     assert sqlite_facade.get_download_request(404) is None
     assert downloader._queue.handoff_download_turn(turn).download_generation == 1
+
+
+def test_replaced_request_survives_stale_completion_and_handoff_on_schema_eight(
+    sqlite_facade: VNextDownloadQueueFacade,
+) -> None:
+    downloader = make_downloader(sqlite_facade)
+    original = downloader._queue.request_download(1)
+    turn = downloader._queue.claim_download_turn(lease_seconds=60)
+    replacement = downloader._queue.request_download(
+        1, "https://exhentai.org/g/1/abcdef0123/"
+    )
+    assert replacement.request_token != original.request_token
+    assert not downloader._queue.complete_download_request_in_turn(turn, original)
+    assert not downloader._queue.is_current(original)
+    assert downloader._queue.is_current(replacement)
+    renewed = downloader._queue.renew_download_turn(turn, lease_seconds=60)
+    handoff = downloader._queue.handoff_download_turn(renewed)
+    assert handoff.download_generation == turn.generation
+    assert not downloader._queue.is_download_handoff_complete(handoff)
+    assert sqlite_facade.get_download_request(1) == replacement
 
 
 async def test_claim_turn_retries_backend_neutral_unavailability(
