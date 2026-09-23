@@ -1,20 +1,20 @@
 {
-  "checked_at": "2026-09-15T12:10:40+00:00",
-  "manifest_sha256": "15bd1cb42faae3530cfb8e7ad7edc1b985a9d4aca9356d403be69f4d0b17bf36",
+  "checked_at": "2026-09-23T12:49:26+00:00",
+  "manifest_sha256": "ac9860ee3dd11ee15ea4f4b232694bd61c820e079f2264c0a2111f49263b5bac",
   "node": [
     {
       "declared": ">=0.23.2",
-      "latest": "0.23.2",
+      "latest": "0.23.3",
       "latest_satisfies": true,
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.21.0",
+  "project_version": "0.22.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
       "group": "build",
-      "latest": "1.32.0",
+      "latest": "1.32.4",
       "latest_satisfies": true,
       "name": "hatchling",
       "python_3_14": true,
@@ -30,9 +30,9 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.39.0,<0.40.0",
+      "declared": "h2hdb>=0.41.1,<0.42.0",
       "group": "runtime",
-      "latest": "0.38.3",
+      "latest": "0.41.0",
       "latest_satisfies": false,
       "name": "h2hdb",
       "python_3_14": true,
@@ -41,7 +41,7 @@
     {
       "declared": "hbrowser>=0.44.0,<0.45.0",
       "group": "runtime",
-      "latest": "0.44.1",
+      "latest": "0.44.2",
       "latest_satisfies": true,
       "name": "hbrowser",
       "python_3_14": true,
@@ -59,7 +59,7 @@
     {
       "declared": "hatchling>=1.32.0",
       "group": "optional:dev",
-      "latest": "1.32.0",
+      "latest": "1.32.4",
       "latest_satisfies": true,
       "name": "hatchling",
       "python_3_14": true,
@@ -68,7 +68,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.7",
+      "latest": "0.16.8",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 11 Python and 1 Node direct requirement entries, including registry candidates outside declared bounds. The only changed direct candidate since the previous reviewed receipt is h2hdb 0.38.3; all external candidates and their prior release-note reviews are unchanged and support Python 3.14. Reviewed the local upstream core release history from 0.37.3 through 0.38.3 and the 0.39.0 schema-7 implementation: the injected public queue facade remains intact, while schema admission now requires epoch 3/version 7. Require h2hdb>=0.39.0,<0.40.0 instead of keeping older schema-6 lanes or a runtime compatibility shim. Registry core 0.38.3 is intentionally below this coordinated unreleased candidate; validation used the explicitly supplied h2hdb 0.39.0 wheel SHA-256 b3756eb80768c60ae44290b92ad8deefde15a4311397f31eefb300e3e543fb0c. Installed that wheel and editable downloader[dev] together through the complete upgrading resolver, verified wheel/editable origins, and uv pip check accepted all 43 installed packages. The resolver also refreshed transitive ast-serialize to 0.11.2 and wrapt to 2.4.1. All 161 offline tests passed with actual core 0.39.0, including real SQLite queue/turn coordination and dependency-regression rejection of the previous upper bound. Ruff, formatter, strict mypy and Markdown checks passed. The downloader library keeps injected facade ownership and has no new startup, schema migration, browser/network, or archive behavior. Core provides and independently validates the one-time offline schema-6-to-7 conversion preserving database facts and CBZ files. Final exact integration runs the repository check-full merge hook, including the sdist/wheel build and isolated installed-runtime-requirements/public-export check; that gate result is reported separately. No live account or network runtime is exercised.",
+    "note": "Reviewed all 11 Python and 1 Node direct requirements, including candidates outside upper bounds. Core registry 0.41.0 is deliberately excluded: the schema-8 cleanup-aware audit requires 0.41.1, supplied explicitly as the frozen wheel SHA-256 ba038f770b8910a6211565d5c1b30cb5cd78e5d324e7893e568d99dab33cc9fd; all 95 installed Core package files were byte-compared with that wheel. Core owns the one-time schema-7-to-8 converter preserving existing database and CBZ data; downloader neither initializes nor migrates schema. Reviewed public queue facade calls and unchanged immutable DownloadTurn/DownloadHandoff contracts. No runtime fallback is needed or retained. Reviewed new direct candidates since the prior receipt: Hatchling 1.32.4 restores the pre-1.32.3 build-hook generic interface and fixes CalVer metadata whitespace (https://github.com/pypa/hatch/releases/tag/hatchling-v1.32.4); Ruff 0.16.8 fixes TypedDict/pyupgrade handling and updates rules, with the existing strict configuration passing unchanged (https://github.com/astral-sh/ruff/releases/tag/0.16.8); markdownlint-cli2 0.23.3 updates dependencies, with all repository Markdown passing (https://github.com/DavidAnson/markdownlint-cli2/blob/v0.23.3/CHANGELOG.md). hbrowser 0.44.2 was reviewed from the local upstream ceabd33..6699acf release history and e7ab3b8 runtime dispatch refactor; its public gallery lookup and submission APIs remain intact. Other direct candidates match the previous reviewed receipt. The fresh upgrading resolver installed all latest allowed external direct candidates with the explicit Core wheel, and uv pip check accepted all 43 installed packages. All 163 offline tests passed, including actual schema-8 SQLite queue token replacement, heartbeat, handoff and full READY checks; fake browser tests cover normal, cancellation, replay and failure behavior without live account/network access. Ruff, formatter, strict mypy and Markdown checks passed. The final repository merge gate separately validates sdist/wheel build and installed dependency metadata/public exports. No push, publish or deployment was performed.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
