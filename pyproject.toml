@@ -14,7 +14,7 @@ requires-python = ">=3.14"
 dependencies = [
     "h2h-galleryinfo-parser>=0.5.3,<0.6",
     # Core 0.41.1 owns schema 8 and validates interrupted cleanup on admission.
-    "h2hdb>=0.41.1,<0.42.0",
+    "h2hdb>=0.41.1,<0.43.0",
     "hbrowser>=0.44.0,<0.45.0",
 ]
 classifiers = [
