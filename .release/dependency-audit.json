@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-23T12:49:26+00:00",
-  "manifest_sha256": "ac9860ee3dd11ee15ea4f4b232694bd61c820e079f2264c0a2111f49263b5bac",
+  "checked_at": "2026-09-25T08:46:56+00:00",
+  "manifest_sha256": "120d71c534409eb3fe4a9d1190372701f60c15cc8cf125283a37930ba9ecda03",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.22.0",
+  "project_version": "0.22.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,10 +30,10 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.41.1,<0.42.0",
+      "declared": "h2hdb>=0.41.1,<0.43.0",
       "group": "runtime",
-      "latest": "0.41.0",
-      "latest_satisfies": false,
+      "latest": "0.42.0",
+      "latest_satisfies": true,
       "name": "h2hdb",
       "python_3_14": true,
       "url": "https://pypi.org/project/h2hdb/"
@@ -68,7 +68,7 @@
     {
       "declared": "ruff>=0.16.4",
       "group": "optional:dev",
-      "latest": "0.16.8",
+      "latest": "0.16.9",
       "latest_satisfies": true,
       "name": "ruff",
       "python_3_14": true,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all 11 Python and 1 Node direct requirements, including candidates outside upper bounds. Core registry 0.41.0 is deliberately excluded: the schema-8 cleanup-aware audit requires 0.41.1, supplied explicitly as the frozen wheel SHA-256 ba038f770b8910a6211565d5c1b30cb5cd78e5d324e7893e568d99dab33cc9fd; all 95 installed Core package files were byte-compared with that wheel. Core owns the one-time schema-7-to-8 converter preserving existing database and CBZ data; downloader neither initializes nor migrates schema. Reviewed public queue facade calls and unchanged immutable DownloadTurn/DownloadHandoff contracts. No runtime fallback is needed or retained. Reviewed new direct candidates since the prior receipt: Hatchling 1.32.4 restores the pre-1.32.3 build-hook generic interface and fixes CalVer metadata whitespace (https://github.com/pypa/hatch/releases/tag/hatchling-v1.32.4); Ruff 0.16.8 fixes TypedDict/pyupgrade handling and updates rules, with the existing strict configuration passing unchanged (https://github.com/astral-sh/ruff/releases/tag/0.16.8); markdownlint-cli2 0.23.3 updates dependencies, with all repository Markdown passing (https://github.com/DavidAnson/markdownlint-cli2/blob/v0.23.3/CHANGELOG.md). hbrowser 0.44.2 was reviewed from the local upstream ceabd33..6699acf release history and e7ab3b8 runtime dispatch refactor; its public gallery lookup and submission APIs remain intact. Other direct candidates match the previous reviewed receipt. The fresh upgrading resolver installed all latest allowed external direct candidates with the explicit Core wheel, and uv pip check accepted all 43 installed packages. All 163 offline tests passed, including actual schema-8 SQLite queue token replacement, heartbeat, handoff and full READY checks; fake browser tests cover normal, cancellation, replay and failure behavior without live account/network access. Ruff, formatter, strict mypy and Markdown checks passed. The final repository merge gate separately validates sdist/wheel build and installed dependency metadata/public exports. No push, publish or deployment was performed.",
+    "note": "Reviewed all direct build, runtime, development and Node candidates on 2026-09-25. Core 0.42.0 is now the registry candidate and is admitted alongside the retained >=0.41.1 lower bound; <0.43.0 excludes the next unreviewed lane. Compared Core 0.41.2 commit 64683c5 with 0.42.0 source f8fdf37: public exports, config, domain, ports, facades and generated schema provider are unchanged; only the private offline conversion audit writer was removed. Installed the explicit Core 0.42.0 wheel SHA256 c7e3c56db5174ace5b15d9fdb25c3788e24938affbcbeffc6d3e3d6908358a9d, whose 95 package files exactly match the reviewed checkout. No consumer runtime shim or database migration is introduced. Ruff 0.16.9 fixes keyword-argument false positives in enabled bugbear rules and deferred-annotation lazy imports; reviewed https://github.com/astral-sh/ruff/releases/tag/0.16.9 and installed the candidate with strict rules unchanged. Other unchanged upstream candidate reviews carry forward. Installed the latest allowed external candidates with actual dependency resolution. Fifteen focused dependency/public-boundary/real-SQLite coordination tests passed, including token replacement, heartbeat, handoff and previous upper-bound rejection for Core 0.42.0. The final canonical merge gate separately validates the full offline suite, distributions and installed-wheel active requirements. Browser/network behavior remains covered with fakes; no live accounts or production database were used.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

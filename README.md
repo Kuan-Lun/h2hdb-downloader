@@ -29,12 +29,15 @@ python -m pip install h2hdb-downloader
 To install this checkout instead, run `python -m pip install .` from its root.
 The package declares compatible `h2hdb` and `hbrowser` dependency versions;
 let the installer resolve them together. This release uses h2hdb schema version
-8 (epoch 3), with Core 0.41.1 or later in the 0.41 lane. Follow the
+8 (epoch 3), with Core `>=0.41.1,<0.43.0`. Core 0.42 retains the same public
+queue APIs and schema 8. Follow the
 [h2hdb setup instructions](https://github.com/Kuan-Lun/h2hdb#readme) to prepare
 the database and configuration file before running the example.
 
-Existing schema-7 databases require Core's offline source-collection schema
-upgrade before using this release. Keep downloader and all other consumers stopped
+Existing schema-7 databases require the historical Core 0.41.2 offline
+source-collection schema upgrade before using this release. Core 0.42 removed
+that one-time tool; follow Core's instructions for its historical checkout or
+an existing upgrade bundle. Keep downloader and all other consumers stopped
 during that conversion; existing database contents and CBZ files are retained.
 Downloader does not initialize or upgrade the database itself.
 
