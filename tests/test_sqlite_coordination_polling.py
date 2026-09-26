@@ -30,7 +30,7 @@ def sqlite_facade(tmp_path: Path) -> Iterator[VNextDownloadQueueFacade]:
     initialized = admin.initialize()
     assert (initialized.epoch, initialized.schema_version, initialized.state) == (
         3,
-        8,
+        9,
         "READY",
     )
     facade = VNextDownloadQueueFacade(config)
@@ -43,7 +43,7 @@ def sqlite_facade(tmp_path: Path) -> Iterator[VNextDownloadQueueFacade]:
             assert checked.manifest_sha256 == initialized.manifest_sha256
             assert (checked.epoch, checked.schema_version, checked.state) == (
                 3,
-                8,
+                9,
                 "READY",
             )
         finally:
@@ -92,7 +92,7 @@ def test_queue_wrappers_use_public_core_sqlite_facade(
     assert downloader._queue.handoff_download_turn(turn).download_generation == 1
 
 
-def test_replaced_request_survives_stale_completion_and_handoff_on_schema_eight(
+def test_replaced_request_survives_stale_completion_and_handoff_on_schema_nine(
     sqlite_facade: VNextDownloadQueueFacade,
 ) -> None:
     downloader = make_downloader(sqlite_facade)
