@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-25T08:46:56+00:00",
-  "manifest_sha256": "120d71c534409eb3fe4a9d1190372701f60c15cc8cf125283a37930ba9ecda03",
+  "checked_at": "2026-09-26T18:14:53+00:00",
+  "manifest_sha256": "cb3d994a61554048ad659f96fd13acadd41eeaa01a961c64b4adea6b3565d4c6",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.22.1",
+  "project_version": "0.23.0",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,10 +30,10 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.41.1,<0.43.0",
+      "declared": "h2hdb>=0.43.0,<0.44.0",
       "group": "runtime",
-      "latest": "0.42.0",
-      "latest_satisfies": true,
+      "latest": "0.42.2",
+      "latest_satisfies": false,
       "name": "h2hdb",
       "python_3_14": true,
       "url": "https://pypi.org/project/h2hdb/"
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed all direct build, runtime, development and Node candidates on 2026-09-25. Core 0.42.0 is now the registry candidate and is admitted alongside the retained >=0.41.1 lower bound; <0.43.0 excludes the next unreviewed lane. Compared Core 0.41.2 commit 64683c5 with 0.42.0 source f8fdf37: public exports, config, domain, ports, facades and generated schema provider are unchanged; only the private offline conversion audit writer was removed. Installed the explicit Core 0.42.0 wheel SHA256 c7e3c56db5174ace5b15d9fdb25c3788e24938affbcbeffc6d3e3d6908358a9d, whose 95 package files exactly match the reviewed checkout. No consumer runtime shim or database migration is introduced. Ruff 0.16.9 fixes keyword-argument false positives in enabled bugbear rules and deferred-annotation lazy imports; reviewed https://github.com/astral-sh/ruff/releases/tag/0.16.9 and installed the candidate with strict rules unchanged. Other unchanged upstream candidate reviews carry forward. Installed the latest allowed external candidates with actual dependency resolution. Fifteen focused dependency/public-boundary/real-SQLite coordination tests passed, including token replacement, heartbeat, handoff and previous upper-bound rejection for Core 0.42.0. The final canonical merge gate separately validates the full offline suite, distributions and installed-wheel active requirements. Browser/network behavior remains covered with fakes; no live accounts or production database were used.",
+    "note": "Reviewed every direct build, runtime, dev and Node candidate, including outside current upper bounds. This breaking compatibility lane requires Core >=0.43.0,<0.44.0 and schema 9; registry Core 0.42.2 remains schema 8 and is intentionally excluded. Installed the explicitly supplied non-editable working Core 0.43.0 wheel SHA256 00f8f4a7f7f1ef03a114a5ff35d3783b946f9225cb376647f8e251ddd068e665. Schema 9 changes upload timestamp storage authority, while public download queue facade and immutable request/turn/handoff types remain unchanged. Downloader still accepts only the injected public queue facade, never opens configuration or schema internals, and adds no runtime compatibility path. Updated schema 9 real SQLite queue tests preserve token replacement, stale completion rejection, heartbeat and handoff; the AST public-boundary test and dependency lane rejection cases passed. All 165 offline tests and the fast gate passed with this candidate. Browser/network tests use fakes. External registry candidates and installed versions remain those reviewed in the 2026-09-25 receipt: h2h-galleryinfo-parser 0.5.3, hbrowser 0.44.2, Hatchling 1.32.4, build 1.6.1, Ruff 0.16.9, mypy 2.3.1, packaging 26.3, pytest 9.1.1, pytest-asyncio 1.4.0 and markdownlint-cli2 0.23.3; prior official release-note review remains in Git history. Core active runtime requirements also pass installed dependency consistency. Final Core wheel validation, exact final full gate, distributions and installed-wheel active requirements are separate required checks, not claimed by this candidate receipt. No live browser, account, H@H network, NAS or production database was used.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
