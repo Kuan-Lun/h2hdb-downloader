@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-26T18:14:53+00:00",
-  "manifest_sha256": "cb3d994a61554048ad659f96fd13acadd41eeaa01a961c64b4adea6b3565d4c6",
+  "checked_at": "2026-09-27T06:19:57+00:00",
+  "manifest_sha256": "80a62972d56a9d5137620779b6712b63e738aa7a2aa4fc387db5cffeddbb70ab",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.23.0",
+  "project_version": "0.23.1",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,7 +30,7 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.43.0,<0.44.0",
+      "declared": "h2hdb>=0.43.0,<0.45.0",
       "group": "runtime",
       "latest": "0.42.2",
       "latest_satisfies": false,
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, dev and Node candidate, including outside current upper bounds. This breaking compatibility lane requires Core >=0.43.0,<0.44.0 and schema 9; registry Core 0.42.2 remains schema 8 and is intentionally excluded. Installed the explicitly supplied non-editable working Core 0.43.0 wheel SHA256 00f8f4a7f7f1ef03a114a5ff35d3783b946f9225cb376647f8e251ddd068e665. Schema 9 changes upload timestamp storage authority, while public download queue facade and immutable request/turn/handoff types remain unchanged. Downloader still accepts only the injected public queue facade, never opens configuration or schema internals, and adds no runtime compatibility path. Updated schema 9 real SQLite queue tests preserve token replacement, stale completion rejection, heartbeat and handoff; the AST public-boundary test and dependency lane rejection cases passed. All 165 offline tests and the fast gate passed with this candidate. Browser/network tests use fakes. External registry candidates and installed versions remain those reviewed in the 2026-09-25 receipt: h2h-galleryinfo-parser 0.5.3, hbrowser 0.44.2, Hatchling 1.32.4, build 1.6.1, Ruff 0.16.9, mypy 2.3.1, packaging 26.3, pytest 9.1.1, pytest-asyncio 1.4.0 and markdownlint-cli2 0.23.3; prior official release-note review remains in Git history. Core active runtime requirements also pass installed dependency consistency. Final Core wheel validation, exact final full gate, distributions and installed-wheel active requirements are separate required checks, not claimed by this candidate receipt. No live browser, account, H@H network, NAS or production database was used.",
+    "note": "Reviewed every direct build, runtime, development and Node registry candidate, including outside declared bounds, against the prior 0.23.0 receipt. Every non-Core latest version, Python 3.14 support result and declaration is unchanged; the previous official release-note reviews retained in Git history remain applicable. Registry Core remains 0.42.2 and is deliberately excluded because it uses schema 8. This compatible consumer patch expands Core to >=0.43.0,<0.45.0, preserving the verified 0.43 lane and admitting 0.44 while rejecting schema-8 releases and the unreviewed 0.45 lane. Core 0.44.0 removes the public one-time offline upgrade tools, a breaking CLI retirement in Core; it keeps schema 9 and consumer public runtime contracts unchanged. Independently compared all 95 h2hdb package files in Core 0.44.0 wheel SHA256 8c78e6deb328421e5bb0e3c92fe1357f127a899f548267b775d4c006a896db0d with tested Core 0.43.0 v5 wheel SHA256 041bb67265cd12d6d2762841ec55c4bb996b3f697d2512bc5ddd8e47b947b966: file sets and bytes are identical. Installed the explicit local 0.44 wheel and verified every installed package file; this is not a registry installation claim. 16 targeted cases passed on Core 0.44.0: installed dependency boundaries and actual schema-9 SQLite public queue polling, token replacement, stale completion rejection and handoff. All 10 updated dependency-boundary cases also passed on the retained Core 0.43.0 v5 environment. Normal pre-commit fast checks passed for the functional change. README points any still-unconverted database to the separate historical Core 0.43.0 checkout at 70ca4a35d02a50e7d6f8fd294fccb0829321eaf4; existing schema 9 needs no conversion, data deletion or CBZ rebuild. No consumer runtime shim or source behavior was added. Final exact-tree review, full gate, distribution smoke and final release-commit checks remain mandatory and are not claimed by this dependency receipt. No live external consumer, account, browser, NAS or production database was used.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"

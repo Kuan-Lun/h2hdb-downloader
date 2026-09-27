@@ -39,7 +39,9 @@ def test_current_manifest_accepts_the_installed_core_cohort() -> None:
     assert "0.42.2" not in core.specifier
     assert "0.43.0" in core.specifier
     assert "0.43.1" in core.specifier
-    assert "0.44.0" not in core.specifier
+    assert "0.44.0" in core.specifier
+    assert "0.44.1" in core.specifier
+    assert "0.45.0" not in core.specifier
     assert version("h2hdb") in core.specifier
     _check()(dependencies)
 
@@ -54,6 +56,7 @@ def test_current_manifest_accepts_the_installed_core_cohort() -> None:
         ("0.41.1", "h2hdb>=0.39.0,<0.40.0"),
         ("0.42.0", "h2hdb>=0.41.1,<0.42.0"),
         ("0.43.0", "h2hdb>=0.41.1,<0.43.0"),
+        ("0.44.0", "h2hdb>=0.43.0,<0.44.0"),
     ],
 )
 def test_smoke_rejects_the_previous_upper_bound_with_new_core(
