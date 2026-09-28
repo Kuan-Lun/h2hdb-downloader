@@ -29,9 +29,11 @@ python -m pip install h2hdb-downloader
 To install this checkout instead, run `python -m pip install .` from its root.
 The package declares compatible `h2hdb` and `hbrowser` dependency versions;
 let the installer resolve them together. This release uses h2hdb schema version
-9 (epoch 3), with Core `>=0.43.0,<0.45.0`. Core 0.43 and 0.44 share the same schema
-and public queue facade contracts; 0.44 retires the one-time offline upgrade
-tools. Both Core version series are supported. Follow the
+9 (epoch 3), with Core `>=0.43.0,<0.46.0`. Core 0.43, 0.44 and 0.45 share the same
+schema and public queue facade contracts. Core 0.44 retires the one-time offline
+upgrade tools; 0.45 changes the database performance log format and optimizes
+internal analysis queries. Downloader does not parse that log format. All three
+Core version series are supported; the unreviewed 0.46 series is excluded. Follow the
 [h2hdb setup instructions](https://github.com/Kuan-Lun/h2hdb#readme) to prepare
 the database and configuration file before running the example.
 
