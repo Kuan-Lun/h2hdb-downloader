@@ -1,6 +1,6 @@
 {
-  "checked_at": "2026-09-27T06:19:57+00:00",
-  "manifest_sha256": "80a62972d56a9d5137620779b6712b63e738aa7a2aa4fc387db5cffeddbb70ab",
+  "checked_at": "2026-09-28T12:05:01+00:00",
+  "manifest_sha256": "3048e1aff7f2b2dec8b4c48e7f0d0c009e955990a78aebe3f77eb85ac82699bd",
   "node": [
     {
       "declared": ">=0.23.2",
@@ -9,7 +9,7 @@
       "name": "markdownlint-cli2"
     }
   ],
-  "project_version": "0.23.1",
+  "project_version": "0.23.2",
   "python": [
     {
       "declared": "hatchling>=1.32.0",
@@ -30,10 +30,10 @@
       "url": "https://pypi.org/project/h2h-galleryinfo-parser/"
     },
     {
-      "declared": "h2hdb>=0.43.0,<0.45.0",
+      "declared": "h2hdb>=0.43.0,<0.46.0",
       "group": "runtime",
-      "latest": "0.42.2",
-      "latest_satisfies": false,
+      "latest": "0.44.0",
+      "latest_satisfies": true,
       "name": "h2hdb",
       "python_3_14": true,
       "url": "https://pypi.org/project/h2hdb/"
@@ -112,7 +112,7 @@
     }
   ],
   "review": {
-    "note": "Reviewed every direct build, runtime, development and Node registry candidate, including outside declared bounds, against the prior 0.23.0 receipt. Every non-Core latest version, Python 3.14 support result and declaration is unchanged; the previous official release-note reviews retained in Git history remain applicable. Registry Core remains 0.42.2 and is deliberately excluded because it uses schema 8. This compatible consumer patch expands Core to >=0.43.0,<0.45.0, preserving the verified 0.43 lane and admitting 0.44 while rejecting schema-8 releases and the unreviewed 0.45 lane. Core 0.44.0 removes the public one-time offline upgrade tools, a breaking CLI retirement in Core; it keeps schema 9 and consumer public runtime contracts unchanged. Independently compared all 95 h2hdb package files in Core 0.44.0 wheel SHA256 8c78e6deb328421e5bb0e3c92fe1357f127a899f548267b775d4c006a896db0d with tested Core 0.43.0 v5 wheel SHA256 041bb67265cd12d6d2762841ec55c4bb996b3f697d2512bc5ddd8e47b947b966: file sets and bytes are identical. Installed the explicit local 0.44 wheel and verified every installed package file; this is not a registry installation claim. 16 targeted cases passed on Core 0.44.0: installed dependency boundaries and actual schema-9 SQLite public queue polling, token replacement, stale completion rejection and handoff. All 10 updated dependency-boundary cases also passed on the retained Core 0.43.0 v5 environment. Normal pre-commit fast checks passed for the functional change. README points any still-unconverted database to the separate historical Core 0.43.0 checkout at 70ca4a35d02a50e7d6f8fd294fccb0829321eaf4; existing schema 9 needs no conversion, data deletion or CBZ rebuild. No consumer runtime shim or source behavior was added. Final exact-tree review, full gate, distribution smoke and final release-commit checks remain mandatory and are not claimed by this dependency receipt. No live external consumer, account, browser, NAS or production database was used.",
+    "note": "Reviewed every direct build, runtime, development and Node dependency, including candidates outside existing bounds. Compared with the preceding 0.23.1 receipt: all non-Core latest candidates and Python 3.14 support are unchanged; prior official release-note reviews remain applicable. Public PyPI JSON discovery returned Core 0.44.0 at this audit time; the user-provided NAS resolver log independently shows an index already selecting 0.45.0. That discovery difference is not evidence that 0.45.0 is unpublished. This task uses an explicit Core 0.45.0 wheel built from reviewed Core commit 0ec9a49, SHA256 255180d5bd152b4744a6f3932f354e110e6b621c86f211854978780089ffc8ba. Core 0.45 changes diagnostic telemetry and internal analysis queries, with schema 9 and public queue facade contracts unchanged; Downloader does not parse the changed telemetry. The supported range preserves tested Core 0.43/0.44 and adds 0.45 while rejecting schema-8 releases and the unreviewed 0.46 lane. 17 focused cases passed against installed Core 0.45, covering actual SQLite public facade queue polling, exact token replacement, stale completion rejection and handoff, plus the new regression rejecting the previous <0.45 bound. A fresh runtime venv normally resolved the actual Core 0.45 and Downloader 0.23.2 wheels with transitive dependencies, without --no-deps; installed-wheel metadata/public export smoke and uv pip check passed. No runtime implementation, public API, config, data format or compatibility shim was changed. Final repository gate and separately recorded all-role Compose candidate integration remain required; this receipt does not claim those checks, a registry-only release cohort, or production deployment. No real external account, browser or production database was accessed.",
     "status": "reviewed"
   },
   "schema": "h2h.dependency-audit.v1"
