@@ -6,7 +6,7 @@ repository_root="$(git rev-parse --show-toplevel)"
 cd "$repository_root"
 
 scripts/check-fast.sh
-.venv/bin/pytest
+.venv/bin/pytest --check-backend-pairs
 
 artifact_root="$(mktemp -d "${TMPDIR:-/tmp}/h2hdb-downloader-check.XXXXXX")"
 cleanup() {

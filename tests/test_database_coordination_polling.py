@@ -1,11 +1,8 @@
 from collections.abc import Callable, Iterator
-from pathlib import Path
 from typing import cast
 
 import pytest
 from h2hdb import (
-    CoreConfig,
-    DatabaseConfig,
     DownloadHandoff,
     DownloadIngestUnavailableError,
     DownloadTurn,
@@ -16,16 +13,12 @@ from h2hdb import (
 
 from h2hdb_downloader.downloader import Downloader, GalleryDriver
 from tests.conftest import fake_token, fake_turn
+from tests.database_support import DatabaseCase
 
 
 @pytest.fixture
-def sqlite_facade(tmp_path: Path) -> Iterator[VNextDownloadQueueFacade]:
-    config = CoreConfig(
-        database=DatabaseConfig(
-            sql_type="sqlite",
-            database=str(tmp_path / "coordination.sqlite3"),
-        )
-    )
+def database_facade(database_case: DatabaseCase) -> Iterator[VNextDownloadQueueFacade]:
+    config = database_case.config
     admin = VNextDatabaseAdminFacade(config)
     initialized = admin.initialize()
     assert (initialized.epoch, initialized.schema_version, initialized.state) == (
@@ -61,10 +54,10 @@ def make_downloader(facade: VNextDownloadQueueFacade) -> Downloader:
     )
 
 
-def test_queue_wrappers_use_public_core_sqlite_facade(
-    sqlite_facade: VNextDownloadQueueFacade,
+def test_queue_wrappers_use_public_core_database_facade(
+    database_facade: VNextDownloadQueueFacade,
 ) -> None:
-    downloader = make_downloader(sqlite_facade)
+    downloader = make_downloader(database_facade)
     existing = downloader._queue.request_download(1)
 
     ensured_existing = downloader._queue.ensure_download_request(
@@ -87,15 +80,15 @@ def test_queue_wrappers_use_public_core_sqlite_facade(
         ensured_missing.request,
         404,
     )
-    assert sqlite_facade.get_download_request(1) is None
-    assert sqlite_facade.get_download_request(404) is None
+    assert database_facade.get_download_request(1) is None
+    assert database_facade.get_download_request(404) is None
     assert downloader._queue.handoff_download_turn(turn).download_generation == 1
 
 
 def test_replaced_request_survives_stale_completion_and_handoff_on_schema_nine(
-    sqlite_facade: VNextDownloadQueueFacade,
+    database_facade: VNextDownloadQueueFacade,
 ) -> None:
-    downloader = make_downloader(sqlite_facade)
+    downloader = make_downloader(database_facade)
     original = downloader._queue.request_download(1)
     turn = downloader._queue.claim_download_turn(lease_seconds=60)
     replacement = downloader._queue.request_download(
@@ -109,7 +102,7 @@ def test_replaced_request_survives_stale_completion_and_handoff_on_schema_nine(
     handoff = downloader._queue.handoff_download_turn(renewed)
     assert handoff.download_generation == turn.generation
     assert not downloader._queue.is_download_handoff_complete(handoff)
-    assert sqlite_facade.get_download_request(1) == replacement
+    assert database_facade.get_download_request(1) == replacement
 
 
 async def test_claim_turn_retries_backend_neutral_unavailability(
