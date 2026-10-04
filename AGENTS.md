@@ -139,6 +139,11 @@
   reason 必須說明實際 engine 差異，不能把尚未移植當作例外。一般 gate
   必須啟用 `--check-backend-pairs` 的離線 collection 配對檢查，以及 native
   connector connection guard；新增未分類或掛錯 backend 的真 SQL 案例須失敗。
+- 上述測試的 dev-only backend guard 可以 import 並攔截 Core 原生
+  connector，驗證實際連線 backend；隔離 fixture 與獨立唯讀 SQL oracle
+  也可直接使用原生 connector。這項例外只限本機合成 disposable database
+  與明確提供的測試 artifact，不得進入 shipped consumer runtime，不授權
+  production／live database SQL，也不得另行擁有 schema 或 migration。
 - 配對 collection 不證明案例已執行；手動 MariaDB 結果必須與預設離線 gate
   分開回報。MariaDB 只使用明確 opt-in 的本機 disposable test container 與
   合成帳密，不讀生產連線設定，也不進入一般 pytest 或自動 gate。
