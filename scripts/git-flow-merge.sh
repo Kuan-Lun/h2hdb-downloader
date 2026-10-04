@@ -18,7 +18,10 @@ assert_no_operation() {
     local worktree=$1 git_path
 
     for name in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD REBASE_HEAD; do
-        git_path="$(git -C "$worktree" rev-parse --git-path "$name")"
+        git_path="$(
+            git -C "$worktree" rev-parse \
+                --path-format=absolute --git-path "$name"
+        )"
         [[ ! -e "$git_path" ]] || fail "Git operation is active: $name"
     done
 }
@@ -26,10 +29,16 @@ assert_no_operation() {
 abort_merge_if_needed() {
     local worktree=$1 merge_head
 
-    merge_head="$(git -C "$worktree" rev-parse --git-path MERGE_HEAD)"
+    merge_head="$(
+        git -C "$worktree" rev-parse \
+            --path-format=absolute --git-path MERGE_HEAD
+    )"
     if [[ -e "$merge_head" ]]; then
-        git -C "$worktree" merge --abort || true
+        git -C "$worktree" merge --abort \
+            || fail "merge failed and could not be aborted: $worktree"
     fi
+    assert_no_operation "$worktree"
+    assert_clean "$worktree"
 }
 
 repository_root="$(git rev-parse --show-toplevel)"
