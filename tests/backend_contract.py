@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 BACKENDS = frozenset({"sqlite", "mariadb"})
+_CONNECTED_BACKENDS = pytest.StashKey[set[str]]()
 
 
 @dataclass(frozen=True)
@@ -23,17 +24,28 @@ class BackendCase:
     family: str
     parameters: tuple[tuple[str, str], ...]
     backend: str
+    execution_policy: tuple[str, ...] = ()
 
 
 def missing_pairs(cases: Iterable[BackendCase]) -> tuple[str, ...]:
     groups: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = defaultdict(set)
+    policies: dict[tuple[str, tuple[tuple[str, str], ...]], set[tuple[str, ...]]] = (
+        defaultdict(set)
+    )
     for case in cases:
         groups[case.family, case.parameters].add(case.backend)
-    return tuple(
-        f"{family} {parameters}: missing {', '.join(sorted(BACKENDS - backends))}"
-        for (family, parameters), backends in sorted(groups.items())
-        if backends != BACKENDS
-    )
+        policies[case.family, case.parameters].add(case.execution_policy)
+    problems = []
+    for (family, parameters), backends in sorted(groups.items()):
+        if backends != BACKENDS:
+            problems.append(
+                f"{family} {parameters}: missing {', '.join(sorted(BACKENDS - backends))}"
+            )
+        if len(policies[family, parameters]) != 1:
+            problems.append(
+                f"{family} {parameters}: asymmetric backend skip/xfail policy"
+            )
+    return tuple(problems)
 
 
 def selected_backend(parameters: Mapping[str, Any], names: Iterable[str]) -> str | None:
@@ -104,6 +116,18 @@ def _selection(item: pytest.Item) -> tuple[str | None, Any]:
         raise pytest.UsageError(f"{item.nodeid}: {error}") from error
 
 
+def _execution_policy(item: pytest.Item) -> tuple[str, ...]:
+    # Shared platform/opt-in marks remain valid; a one-sided mark cannot make
+    # an unimplemented backend look like an equivalent executable variant.
+    return tuple(
+        sorted(
+            repr((marker.name, marker.args, sorted(marker.kwargs.items())))
+            for marker in item.iter_markers()
+            if marker.name in {"skip", "skipif", "xfail"}
+        )
+    )
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
@@ -130,7 +154,9 @@ def pytest_collection_modifyitems(
                     (k, repr(v)) for k, v in callspec.params.items() if k not in names
                 )
             )
-            cases.append(BackendCase(family, parameters, backend))
+            cases.append(
+                BackendCase(family, parameters, backend, _execution_policy(item))
+            )
     if config.getoption("--check-backend-pairs"):
         problems = missing_pairs(cases)
         if problems:
@@ -155,6 +181,8 @@ def pytest_runtest_protocol(
         allowed.add(specific["backend"])
     if reference:
         allowed.update(BACKENDS)
+    connected: set[str] = set()
+    item.stash[_CONNECTED_BACKENDS] = connected
     with pytest.MonkeyPatch.context() as patcher:
         for name, connector_type in (
             ("sqlite", SQLiteConnector),
@@ -172,6 +200,30 @@ def pytest_runtest_protocol(
                         pytrace=False,
                     )
                 _original(self)
+                connected.add(_name)
 
             patcher.setattr(connector_type, "connect", guarded)
         return (yield)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[None]
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    del call
+    report = yield
+    if (
+        report.when == "call"
+        and report.passed
+        and _marker(item, "backend_reference") is not None
+    ):
+        backend, _ = _selection(item)
+        if backend not in item.stash.get(_CONNECTED_BACKENDS, set()):
+            # Do not raise outside runtest's reporting boundary: retain an
+            # ordinary failed test and its teardown instead of INTERNALERROR.
+            report.outcome = "failed"
+            report.longrepr = (
+                f"{item.nodeid}: reference case never opened its selected native "
+                f"{backend} backend successfully"
+            )
+    return report

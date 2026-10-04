@@ -142,3 +142,113 @@ def test_states(database, state):
     pytester.runpytest_subprocess("-q", "--check-backend-pairs").assert_outcomes(
         passed=4
     )
+
+
+@pytest.mark.parametrize(
+    "execution_mark",
+    (
+        "pytest.mark.skip(reason='backend is not implemented')",
+        "pytest.mark.skipif(True, reason='backend is not implemented')",
+        "pytest.mark.xfail(reason='backend is not implemented', strict=True)",
+    ),
+)
+def test_one_sided_execution_policy_cannot_supply_a_missing_backend(
+    pytester: pytest.Pytester, execution_mark: str
+) -> None:
+    _suite(
+        pytester,
+        f"""
+import pytest
+@pytest.mark.parametrize("database", ["sqlite", pytest.param("mariadb", marks={execution_mark})])
+def test_partial(database):
+    raise AssertionError("collection must fail before execution")
+""",
+    )
+    result = pytester.runpytest_subprocess(
+        "-q", "--collect-only", "--check-backend-pairs"
+    )
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*asymmetric backend skip/xfail policy*"])
+
+
+def test_shared_platform_skip_preserves_pairing_without_claiming_execution(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+@pytest.mark.skipif(True, reason="Shared unavailable process platform contract")
+def test_portable(database):
+    raise AssertionError("shared platform exclusion must remain effective")
+""",
+    )
+    pytester.runpytest_subprocess("-q", "--check-backend-pairs").assert_outcomes(
+        skipped=2
+    )
+
+
+def test_reference_backend_cannot_replace_selected_native_backend(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+from h2hdb.sqlite_connector import SQLiteConnector
+@pytest.mark.backend_reference(reason="Independent SQLite reference accompanies the selected native case")
+def test_wrong_backend(database):
+    SQLiteConnector().connect()
+""",
+    )
+    result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["*never opened its selected native mariadb backend*"])
+
+
+def test_reference_backend_allows_actual_selected_connection_and_other_oracle(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.mariadb_connector import MariaDBConnector
+@pytest.mark.backend_reference(reason="Independent SQLite reference accompanies the selected native case")
+def test_both(database):
+    SQLiteConnector().connect()
+    (SQLiteConnector if database == "sqlite" else MariaDBConnector)().connect()
+""",
+    )
+    pytester.runpytest_subprocess("-q", "--check-backend-pairs").assert_outcomes(
+        passed=2
+    )
+
+
+def test_failed_selected_connection_does_not_satisfy_reference_contract(
+    pytester: pytest.Pytester,
+) -> None:
+    _suite(
+        pytester,
+        """
+import pytest
+from h2hdb.sqlite_connector import SQLiteConnector
+from h2hdb.mariadb_connector import MariaDBConnector
+@pytest.mark.backend_reference(reason="Independent SQLite reference accompanies the selected native case")
+def test_failed_connection(database):
+    SQLiteConnector().connect()
+    try:
+        (SQLiteConnector if database == "sqlite" else MariaDBConnector)().connect()
+    except RuntimeError:
+        pass
+""",
+    )
+    (pytester.path / "h2hdb/mariadb_connector.py").write_text(
+        "class MariaDBConnector:\n"
+        "    def connect(self):\n"
+        "        raise RuntimeError('native connection failed')\n"
+    )
+    result = pytester.runpytest_subprocess("-q", "--check-backend-pairs")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["*never opened its selected native mariadb backend*"])
