@@ -132,6 +132,8 @@
 
 ## 測試與例外
 
+- `backend_specific` 例外必須在個別測試或參數明示，禁止從 module/class
+  繼承整批豁免；collection 檢查標記來源，內容是否真正專屬仍須 code review。
 - 可攜的真實 SQL 情境必須共用 registered backend fixture 的同一測試主體，
   並具備其餘參數相同的 SQLite 與 MariaDB 案例；不得以 `skip`、`xfail` 或
   假 backend 標籤替代另一個 backend。純 mock 不需要重複包裝成 SQL 測試。
