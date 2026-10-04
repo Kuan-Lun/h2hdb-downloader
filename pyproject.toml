@@ -33,6 +33,7 @@ dev = [
     "mypy>=2.3.1",
     "packaging>=26.0",
     "pytest>=9.1.1",
+    "testcontainers>=4.15.0",
     "pytest-asyncio>=1.4.0",
 ]
 
@@ -45,8 +46,14 @@ Tracker = "https://github.com/Kuan-Lun/h2hdb-downloader/issues"
 packages = ["src/h2hdb_downloader"]
 
 [tool.pytest.ini_options]
+backend_contract_fixtures = ["database_case"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not mariadb'"
+markers = [
+    "deep: explicitly manual integration outside automatic gates",
+    "mariadb: opt-in disposable MariaDB integration",
+]
 
 [tool.ruff]
 line-length = 88
@@ -67,3 +74,8 @@ warn_unreachable = true
 
 [tool.h2h.version]
 release-paths = ["LICENSE", "src/**"]
+
+# Testcontainers does not publish a complete type surface.
+[[tool.mypy.overrides]]
+module = ["testcontainers.*"]
+ignore_missing_imports = true

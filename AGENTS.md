@@ -132,6 +132,16 @@
 
 ## 測試與例外
 
+- 可攜的真實 SQL 情境必須共用 registered backend fixture 的同一測試主體，
+  並具備其餘參數相同的 SQLite 與 MariaDB 案例；不得以 `skip`、`xfail` 或
+  假 backend 標籤替代另一個 backend。純 mock 不需要重複包裝成 SQL 測試。
+- 只有 engine-specific 契約可使用 `backend_specific(backend=..., reason=...)`，
+  reason 必須說明實際 engine 差異，不能把尚未移植當作例外。一般 gate
+  必須啟用 `--check-backend-pairs` 的離線 collection 配對檢查，以及 native
+  connector connection guard；新增未分類或掛錯 backend 的真 SQL 案例須失敗。
+- 配對 collection 不證明案例已執行；手動 MariaDB 結果必須與預設離線 gate
+  分開回報。MariaDB 只使用明確 opt-in 的本機 disposable test container 與
+  合成帳密，不讀生產連線設定，也不進入一般 pytest 或自動 gate。
 - runtime 行為變更必須新增或更新測試；bug fix 必須有 regression test。
 - 新功能涵蓋正常、邊界與錯誤路徑。
 - 數值測試固定隨機種子；容許誤差需有依據。

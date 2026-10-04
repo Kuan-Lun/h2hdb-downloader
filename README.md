@@ -229,6 +229,25 @@ sanitized exception; do not include credentials or private account pages.
 Report issues through the
 [issue tracker](https://github.com/Kuan-Lun/h2hdb-downloader/issues).
 
+## 本機資料庫整合測試
+
+一般 `pytest` 與自動 gate 不啟動服務。可攜的真實 SQL 測試使用同一個
+`database_case` 測試主體，分別收集 SQLite 與 MariaDB；完整 gate 以
+`--check-backend-pairs` 拒絕漏掉其中一個 backend 的案例。純 mock 測試不重複
+包裝成資料庫測試。真正只適用單一 engine 的測試須提供
+`backend_specific(backend=..., reason=...)`，而非略過配對要求。
+
+先安裝本 repository 的 `dev` dependencies，再使用本機 Docker 執行手動驗證：
+
+```sh
+.venv/bin/python -m pytest --collect-only -q -o addopts='' --check-backend-pairs
+H2HDB_TEST_MARIADB=1 .venv/bin/python -m pytest -q -o addopts='' -m mariadb --check-backend-pairs
+```
+
+MariaDB fixture 建立並移除一次性的 `mariadb:10.11.11` Testcontainer，每個案例
+使用獨立資料庫；只使用合成資料與容器專用帳密，不讀取生產環境設定。
+配對 collection 通過只證明案例齊全；必須另行回報上述 MariaDB 實際執行結果。
+
 ## License
 
 Licensed under GPL-3.0-only. See [LICENSE](LICENSE).

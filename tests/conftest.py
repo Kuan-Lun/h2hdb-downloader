@@ -529,3 +529,6 @@ def downloader_factory(
         )
 
     return make
+
+
+pytest_plugins = ["tests.database_support", "tests.backend_contract"]
