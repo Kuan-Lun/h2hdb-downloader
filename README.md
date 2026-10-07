@@ -1,54 +1,54 @@
 # H2HDB Downloader
 
-H2HDB Downloader submits E-Hentai and ExHentai galleries to H@H and keeps
-resumable download requests in an h2hdb database. It can process a manual CSV
-queue, revisit galleries marked for redownload, and download related works by
-artist or group.
+H2HDB Downloader 讓你的 Python 程式將 E-Hentai／ExHentai 圖庫提交到 H@H 下載，
+並將待辦工作保存在 h2hdb 資料庫。你可以用 CSV 加入下載清單、處理需要重新下載的
+圖庫，或連同作者與社團的相關作品一起下載。
 
-This is a Python library. It has no standalone command-line application or
-background service: use it from a Python program that chooses what to download
-and when to run. Browser access comes from `hbrowser`; an h2hdb ingest process
-handles the files delivered by H@H.
+這是供程式呼叫的函式庫，沒有獨立 CLI 或常駐服務。你的腳本負責決定執行時機；
+[HBrowser](https://github.com/Kuan-Lun/hbrowser#readme) 負責登入與瀏覽器操作，
+[h2hdb-ingest](https://github.com/Kuan-Lun/h2hdb-ingest#readme)
+負責處理 H@H 收到的檔案。
 
-## Requirements and installation
+## 使用前準備
 
-- Python 3.14 or newer.
-- An E-Hentai account with access to the site you use, an available H@H client,
-  and any funds required for archive downloads.
-- A configured h2hdb database and a running ingest process for coordinated
-  downloads. This package does not create or upgrade the database.
-- A working browser environment supported by
-  [HBrowser](https://github.com/Kuan-Lun/hbrowser#readme).
+- Python 3.14 以上版本，以及 HBrowser 支援的瀏覽器環境。
+- 可登入目標網站的 E-Hentai 帳號、在線的 H@H 客戶端，以及網站要求的下載額度或費用。
+  使用 ExHentai 時，帳號也必須具有該站存取權。
+- 已初始化、schema 相容的 h2hdb 資料庫與其 `h2hdb-config.json`。
+- 使用同一個資料庫、持續執行的 ingest 程序，讓下載批次可以交接並繼續處理。
 
-Install into your Python environment:
+請先依 [h2hdb 的使用說明](https://github.com/Kuan-Lun/h2hdb#readme)
+準備資料庫與設定檔。Downloader 不會替你建立或升級資料庫；舊資料庫被拒絕時，
+先依 Core 文件確認適用的離線升級方式。
+
+## 安裝與帳號設定
+
+在這份 checkout 的根目錄建立虛擬環境並安裝套件。
+
+macOS／Linux：
 
 ```bash
-python -m pip install h2hdb-downloader
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
 ```
 
-To install this checkout instead, run `python -m pip install .` from its root.
-The package declares compatible `h2hdb` and `hbrowser` dependency versions;
-let the installer resolve them together. This release uses h2hdb schema version
-9 (epoch 3), with Core `>=0.43.0,<0.46.0`. Core 0.43, 0.44 and 0.45 share the same
-schema and public queue facade contracts. Core 0.44 retires the one-time offline
-upgrade tools; 0.45 changes the database performance log format and optimizes
-internal analysis queries. Downloader does not parse that log format. All three
-Core version series are supported; the unreviewed 0.46 series is excluded. Follow the
-[h2hdb setup instructions](https://github.com/Kuan-Lun/h2hdb#readme) to prepare
-the database and configuration file before running the example.
+Windows PowerShell：
 
-Databases already on schema 9 need no further conversion, database reset or CBZ
-rebuild. Unconverted exact schema-8 databases require the one-time offline
-`scripts/upgrade-observation-upload-time-schema.py` from a separate historical
-Core 0.43.0 checkout at commit `70ca4a35d02a50e7d6f8fd294fccb0829321eaf4`.
-Follow that checkout's README with its matching environment; current Core
-checkouts no longer include these one-time upgrade tools. Existing schema-7
-databases must first use the historical Core 0.41.2 converter to reach
-schema 8. Keep downloader and all other consumers stopped throughout conversion;
-existing database contents, queued requests and CBZ files are retained.
-Downloader does not initialize or upgrade the database itself.
+```powershell
+py -3.14 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install .
+```
 
-Set browser credentials in your script's environment. For Bash or Zsh:
+安裝程式會一併解析依賴；目前宣告的 Core 範圍為 `h2hdb>=0.43.0,<0.46.0`，
+HBrowser 範圍為 `hbrowser>=0.44.0,<0.45.0`，完整內容見
+[pyproject.toml](pyproject.toml)。
+
+在執行腳本的終端機設定瀏覽器帳號。請填入自己的帳密，避免將密碼寫進程式碼或
+提交到版本庫。
+
+macOS／Linux：
 
 ```bash
 export EH_USERNAME='your_username'
@@ -56,7 +56,7 @@ export EH_PASSWORD='your_password'
 export USE_TOR=0
 ```
 
-For PowerShell:
+Windows PowerShell：
 
 ```powershell
 $env:EH_USERNAME = 'your_username'
@@ -64,16 +64,33 @@ $env:EH_PASSWORD = 'your_password'
 $env:USE_TOR = '0'
 ```
 
-`USE_TOR=0` selects a direct connection. If omitted, HBrowser may use a detected
-Tor installation. Keep credentials out of your Python files and version
-control. Start with a visible browser so you can handle login challenges;
-unattended setup and optional FlareSolverr configuration are described in the
-HBrowser README.
+`USE_TOR=0` 使用直接連線；未設定時，HBrowser 可能自動使用本機偵測到的 Tor。
+以下範例會顯示瀏覽器視窗，方便第一次登入時手動完成驗證，因此需要圖形桌面。
+無視窗模式與可選的 FlareSolverr 設定請見 HBrowser 文件。
 
-## Process your download queue
+## 第一次執行：下載 CSV 中的圖庫
 
-Save this as `download_queue.py` beside your configured `h2hdb-config.json`,
-then run `python download_queue.py`:
+### 1. 準備清單
+
+建立 UTF-8 編碼的 `todownload_gids.csv`，將範例 GID 與網址換成要下載的圖庫：
+
+```csv
+gid,url
+123,https://exhentai.org/g/123/456/
+666,
+,https://exhentai.org/g/789/abc/
+```
+
+每列必須恰好有 `gid`、`url` 兩欄。GID 必須是正整數；只有 GID 時會透過瀏覽器查找，
+只有 URL 時會從網址解析 GID，兩者都有時則必須指向同一個圖庫。
+
+CSV 是加入工作的收件匣。匯入資料庫後，已匯入的列會從 CSV 移除；這不代表下載完成。
+檔案不存在時會自動建立，但所在目錄必須已經存在。
+
+### 2. 執行腳本
+
+將以下內容存為 `download_queue.py`，與 `h2hdb-config.json`、
+`todownload_gids.csv` 放在同一個工作目錄，然後執行 `python download_queue.py`：
 
 ```python
 import asyncio
@@ -94,7 +111,7 @@ async def main() -> None:
             retry2download=4 * 60 * 60,
             download_submissions_per_ingest=100,
         ) as downloader:
-            # Empty filters process only the galleries you queued.
+            # 只處理清單中的圖庫，不展開相關作者或社團。
             policy = TagCascadePolicy(filters=(), conditions=())
             results = await downloader.drain_queue(policy)
             for gid, submitted in results.items():
@@ -107,46 +124,25 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-`Downloader` opens and closes the browser session. Pass it a driver that has
-not already been entered. If your application already manages an active driver,
-pass that driver and call downloader methods without entering a second context.
+若使用 E-Hentai，將匯入與建立 driver 的 `ExHDriver` 改成 `EHDriver`。
+`Downloader` 會在進入與離開 `async with` 時開啟及關閉瀏覽器；傳入尚未進入 context
+的 driver 即可。若應用程式已自行管理登入中的 driver，可以傳入該 driver 並直接
+呼叫 downloader 方法，不要再進入一次 `async with downloader`。
 
-The example processes one snapshot of queued work, waits for ingest after each
-batch, and exits. New requests added after that snapshot wait for the next run.
-A returned `True` means the gallery submission was accepted; it is not a local
-file path. `False` means no submission succeeded in that operation, including
-cases where a gallery was skipped or unavailable.
+### 3. 查看結果
 
-## Add galleries with a CSV file
+`drain_queue()` 處理本次取得的佇列快照，每批交給 ingest 並等待它完成，最後回傳
+`dict[int, bool]` 後結束。後來才加入的工作留待下次呼叫處理；腳本不會持續監看 CSV。
 
-Create `todownload_gids.csv` with the following two columns. Replace the sample
-IDs and URL with your targets:
+- `True` 表示圖庫已成功提交到 H@H，並非下載完成通知或本機檔案路徑。
+- `False` 表示這次沒有成功提交，可能是略過、無法取得或其他未成功的情況。
+- 檔案是否已送達及完成匯入，請查看 H@H 與 ingest 的處理狀態。
 
-```csv
-gid,url
-123,https://exhentai.org/g/123/456/
-666,
-,https://exhentai.org/g/789/abc/
-```
+只使用資料庫內已有的待辦工作時，將 `csv_path` 設為 `None` 即可停用 CSV 收件匣。
 
-- A GID alone is looked up through the browser.
-- A URL alone supplies its GID automatically.
-- When both are present, they must identify the same gallery.
-- Each row must have exactly two fields. GIDs must be positive integers.
+## 相關作品與重新下載
 
-The CSV is an inbox: imported rows move into the database queue and disappear
-from the inbox. A missing inbox file is created automatically; its parent
-directory must already exist. Hidden files named `.todownload_gids.csv.claim-*`
-are interrupted imports and are replayed automatically on the next run. Keep
-those files until replay succeeds. A malformed row raises an error; correct the
-reported inbox or claim file before trying again.
-
-Set `csv_path=None` if you only use requests already in the database.
-
-## Download related works and redownloads
-
-To follow the queued gallery's artist and group tags, replace the empty policy
-with:
+若要沿著作者、社團標籤尋找中文或無對白的相關圖庫，將範例中的 policy 改為：
 
 ```python
 policy = TagCascadePolicy(
@@ -155,99 +151,80 @@ policy = TagCascadePolicy(
 )
 ```
 
-Each condition runs as a separate search under each matching tag. Empty
-`conditions` means no additional search restriction, so check the policy before
-starting a potentially large download.
+每個 `condition` 會在每個符合的標籤底下分別搜尋，再合併結果；兩個條件不是要求
+同時符合。`conditions=()` 表示不增加搜尋限制，可能展開大量作品。
+`filters=()` 則不展開相關作品。
 
-Use these methods inside the active downloader context:
+在使用中的 downloader context 內，依需求選擇方法：
 
-| Task | Call |
+| 要做的事 | 呼叫方式 |
 | --- | --- |
-| Process the current durable and CSV queue | `await downloader.drain_queue(policy)` |
-| Process the current pending-redownload list | `await downloader.drain_pending_redownloads(policy)` |
-| Download one GID and its related works | `await downloader.deep_download_by_gid(gid, policy)` |
-| Download a known gallery URL and related works | `await downloader.deep_download_by_gallery(gallery, policy)` |
-| Inspect pending redownload IDs without downloading | `downloader.pending_redownload_gids()` |
+| 處理目前資料庫與 CSV 佇列 | `await downloader.drain_queue(policy)` |
+| 處理目前待重新下載的清單 | `await downloader.drain_pending_redownloads(policy)` |
+| 下載單一 GID 與相關作品 | `await downloader.deep_download_by_gid(gid, policy)` |
+| 下載已知網址的圖庫與相關作品 | `await downloader.deep_download_by_gallery(gallery, policy)` |
+| 只查看待重新下載的 GID | `downloader.pending_redownload_gids()` |
 
-For URL-based methods, construct `gallery` with
-`h2h_galleryinfo_parser.GalleryURLParser(url)`. Deep methods normally follow
-related tags only when the root gallery was downloaded. Pass `skip_check=True`
-to follow its tags even if the root was already downloaded; queue-draining
-methods use this setting by default.
+網址形式的 `gallery` 請用 `h2h_galleryinfo_parser.GalleryURLParser(url)` 建立。
+Deep 方法通常在主圖庫成功提交後才展開相關標籤；設定 `skip_check=True` 可在主圖庫
+被略過時仍展開。兩個 `drain_*` 方法預設已啟用這個選項。
 
-Coordinated methods take turns with ingest and wait for it to finish. With the
-default `download_submissions_per_ingest=100`, a queue batch hands off after at
-least 100 unique submissions or when its snapshot is exhausted. The current
-gallery and all its related downloads finish before that threshold is checked,
-so a batch can exceed 100. This setting counts accepted submissions, not
-completed files or elapsed time.
+預設每批至少接受 100 個不重複圖庫的提交後，或本次快照已處理完時，交接給 ingest。
+`download_submissions_per_ingest` 可以調整這個門檻；主圖庫與其相關作品會先處理完，
+才檢查門檻，因此一批可能超過設定數量。這個數字計算成功提交的圖庫，不計算檔案數
+或等待時間。
 
-For applications that manage their own ingest scheduling,
-`download_by_gallery(gallery)`, `download_by_gid(gid)`, and
-`download_by_tag(tag, conditions)` submit directly without claiming a download
-turn or waiting for ingest. Prefer the coordinated methods above when sharing
-a database with ingest.
+若應用程式自行安排 ingest 時機，也可使用 `download_by_gallery(gallery)`、
+`download_by_gid(gid)`、`download_by_tag(tag, conditions)`。這些直接呼叫仍使用
+資料庫佇列，但不取得下載輪次，也不等待 ingest；需要與 ingest 協調時請使用上述
+`deep_*` 或 `drain_*` 方法。
 
-## Retry settings and recovery
+## 等待、重試與中斷恢復
 
-The two required retry settings are in seconds:
+建立 `Downloader` 時必須提供 `wait4client` 與 `retry2download`，單位都是秒：
 
-| Setting | Effect |
+| 參數 | 行為 |
 | --- | --- |
-| `wait4client` | Delay before retrying when the H@H client is offline. Use `0` to raise immediately. |
-| `retry2download` | Delay before retrying when the account has insufficient funds. Use `0` to raise immediately. |
-| `turn_poll_seconds` | Interval while waiting for a download turn or ingest completion; default `5`. |
-| `turn_lease_seconds` | Recoverable download-turn lease; default `300`. |
-| `turn_heartbeat_seconds` | Lease renewal interval; default `60`, and must be shorter than the lease. |
+| `wait4client` | H@H 客戶端離線時，等待多久再試；`0` 會立即拋出例外。 |
+| `retry2download` | 帳號額度不足時，等待多久再試；`0` 會立即拋出例外。 |
+| `turn_poll_seconds` | 等待下載輪次或 ingest 完成的查詢間隔，預設 `5`。 |
+| `turn_lease_seconds` | 下載輪次的租約秒數，預設 `300`。 |
+| `turn_heartbeat_seconds` | 更新租約的間隔，預設 `60`，必須小於租約秒數。 |
 
-The turn timing values must be positive and finite; the lease and
-`download_submissions_per_ingest` must be positive integers. Usually the defaults
-need no adjustment.
+單次圖庫提交遇到上述離線或額度例外時，最多會在等待後額外嘗試一次；若再次失敗，
+會向呼叫端拋出例外。登入、驗證、搜尋或其他失敗不套用這兩個等待設定。
+下載輪次與 ingest 等待則會按 `turn_poll_seconds` 持續輪詢，所以 ingest 必須能持續
+取得並完成工作。
 
-Interrupted or failed queued work remains available for a later run. Only a
-confirmed missing-gallery result marks a gallery removed; login, challenge,
-search, or navigation errors are failures to retry after their cause is fixed.
-Already downloaded galleries are usually skipped unless requested again or
-marked for redownload; periodic rechecks can still submit a settled gallery.
+輪詢與心跳間隔必須是有限正數；租約與 `download_submissions_per_ingest` 必須是
+正整數。一般使用可保留預設值。
 
-H@H may accept a request immediately before the program stops. Restarting can
-therefore submit that gallery again. Submission is at least once; the library
-does not promise that a gallery is submitted exactly once.
+未完成的佇列工作可在修復原因後重新執行 `drain_queue()`。只有經明確確認不存在的
+圖庫才會標記移除，不能將登入或搜尋失敗當成圖庫已刪除。已收錄的圖庫通常會略過，
+但明確的下載要求、待重新下載標記或定期重新檢查仍可能觸發提交。
 
-| Symptom | What to do |
+程式也可能在 H@H 接受下載後、尚未保存結果前中斷，因此重啟後可能再次提交同一圖庫。
+此流程允許重複提交，不保證只提交一次。若收到 HBrowser 的
+`ArchiveDownloadOutcomeUnknownError`，先檢查 H@H 狀態再決定是否重試。
+
+CSV 旁的 `.todownload_gids.csv.claim-*` 隱藏檔代表尚未完成的匯入，下一次會自動重播。
+請保留這些檔案；格式有誤時修正報錯的 CSV 或 claim 檔，再重新執行。
+
+## 常見問題
+
+| 問題 | 處理方式 |
 | --- | --- |
-| Waiting indefinitely for a turn or ingest | Check that the ingest process is running against the same database and is making progress. |
-| `DownloadTurnLostError` | Stop the current operation; unfinished queued work can be retried in a later run. Check for competing workers or delayed lease renewal. |
-| Login or challenge error | Retry with `headless=False` and verify the account, route, and HBrowser settings. |
-| H@H offline or insufficient funds | Restore the client or balance, or set the corresponding retry delay to `0` to handle the error in your application. |
-| CSV parsing error | Check the two-column format, positive GIDs, and URL/GID agreement, including any retained claim file. |
-| Database schema rejected | Follow h2hdb's setup or offline upgrade instructions. Downloader does not upgrade an existing database. |
+| 一直等待下載輪次或 ingest | 確認 ingest 正在使用相同資料庫，且工作確實有進展。 |
+| `DownloadTurnLostError` | 結束本次操作，檢查是否有競爭中的 worker 或租約更新延遲；未完成工作可留待下次處理。 |
+| 登入或驗證失敗 | 使用 `headless=False` 查看頁面，確認帳號與連線方式，再依 HBrowser 文件排錯。 |
+| H@H 離線或額度不足 | 先恢復客戶端或補足額度；若要自行處理例外，將對應等待參數設為 `0`。 |
+| CSV 解析失敗 | 檢查兩欄格式、正整數 GID、URL／GID 是否一致，以及保留的 claim 檔。 |
+| 資料庫 schema 被拒絕 | 依 h2hdb 文件檢查初始化或離線升級流程，Downloader 不會升級資料庫。 |
 
-For browser diagnostics and optional logging, see the HBrowser README. When
-reporting a problem, include package versions, the failing operation, and a
-sanitized exception; do not include credentials or private account pages.
-Report issues through the
-[issue tracker](https://github.com/Kuan-Lun/h2hdb-downloader/issues).
+瀏覽器診斷與可選日誌設定請見 HBrowser 文件。回報問題時請附套件版本、失敗的操作與
+移除私人資訊後的例外訊息，勿附上帳密或私人帳號頁面。問題可提交到
+[issue tracker](https://github.com/Kuan-Lun/h2hdb-downloader/issues)。
 
-## 本機資料庫整合測試
+## 授權
 
-一般 `pytest` 與自動 gate 不啟動服務。可攜的真實 SQL 測試使用同一個
-`database_case` 測試主體，分別收集 SQLite 與 MariaDB；完整 gate 以
-`--check-backend-pairs` 拒絕漏掉其中一個 backend 的案例。純 mock 測試不重複
-包裝成資料庫測試。真正只適用單一 engine 的測試須提供
-`backend_specific(backend=..., reason=...)`，而非略過配對要求。
-
-先安裝本 repository 的 `dev` dependencies，再使用本機 Docker 執行手動驗證：
-
-```sh
-.venv/bin/python -m pytest --collect-only -q -o addopts='' --check-backend-pairs
-H2HDB_TEST_MARIADB=1 .venv/bin/python -m pytest -q -o addopts='' -m mariadb --check-backend-pairs
-```
-
-MariaDB fixture 建立並移除一次性的 `mariadb:10.11.11` Testcontainer，每個案例
-使用獨立資料庫；只使用合成資料與容器專用帳密，不讀取生產環境設定。
-配對 collection 通過只證明案例齊全；必須另行回報上述 MariaDB 實際執行結果。
-
-## License
-
-Licensed under GPL-3.0-only. See [LICENSE](LICENSE).
+本專案採用 GPL-3.0-only，詳見 [LICENSE](LICENSE)。

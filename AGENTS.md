@@ -39,7 +39,7 @@
 - 工作樹不乾淨時，從 committed primary 建立獨立 worktree。
 - task branch 可包含多個邏輯 Conventional Commits。避免巨大 commit；小而
   內聚的任務仍可只有一個 commit。
-- 任務完成後執行 `scripts/git-flow-merge.sh`。該腳本負責完整 gate、
+- 任務完成後執行 `scripts/git-flow-merge.sh`。該腳本依範圍選擇文件或完整 gate、執行
   `--no-ff` merge、安全移除 task worktree，以及以 `git branch -d`
   刪除已合併的本機 branch。
 - primary 在任務期間可以推進；整合只要求 primary 與 task branch 有共同
@@ -121,9 +121,25 @@
 
 - `scripts/format.sh`：明確執行會修改檔案的 formatter 或 fixer。
 - `scripts/check-fast.sh`：離線、唯讀的 Ruff、format check、mypy 與
-  markdownlint；每次非 merge commit 執行。
+  markdownlint；非純文件的非 merge commit 執行。
 - `scripts/check-full.sh`：fast gate、完整測試、build、wheel smoke 及本
-  repository 的特殊檢查；整合候選只跑一次。
+  repository 的特殊檢查；非純文件的整合候選只跑一次。手動呼叫 fast／full
+  入口仍執行原本完整內容，不自行縮減檢查。
+- `scripts/check_change_scope.py --index --base HEAD` 以 Git tree 與 staged
+  index 判定 `documentation` 或 `full`。只有 `README.md`、`docs/**/*.md`、
+  `benchmarks/README.md`、`verification/README.md` 的普通非執行檔
+  （Git mode `100644`）新增、修改或刪除可視為純文件；rename 的兩端都須符合。
+  `AGENTS.md`、`CLAUDE.md`、程式、tests、scripts、hooks、設定、metadata、
+  symlink、mode 變更及未知路徑一律走原有檢查。空差異走 `full`，分類失敗則
+  阻止提交或合併，不得猜測為文件。
+- `pre-commit` 對純文件執行
+  `.venv/bin/python scripts/check-docs.py --index --base HEAD`，其餘執行 fast；
+  `pre-merge-commit` 保留 staged version check，純文件執行同一文件檢查，
+  其餘執行 full。合併分類涵蓋 primary parent 到 staged candidate 的完整差異，
+  不只看最後一個 commit。文件檢查從 exact staged tree 暫存匯出所有普通
+  Markdown 文件與設定，執行 repository-local Markdown lint 及差異 whitespace
+  check，不讀取未 stage 的內容，
+  也不執行 Ruff、mypy、pytest、build 或 online review。
 - dependency audit 可連網，但 hooks 只驗證本機 receipt，不在 commit
   過程連網。
 - GitHub Actions 只呼叫相同 scripts，並保留 trusted publishing、平台特有
@@ -242,6 +258,6 @@ exports 是 `Downloader`、`TagCascadePolicy` 與
   account、瀏覽器、H@H network 或 production database。
 - queue token、heartbeat、handoff、replay、cancellation、confirmed-missing、
   snapshot cursor 與 at-least-once boundary 變更都必須有 regression tests。
-- `scripts/check-full.sh` 執行完整離線 pytest、sdist/wheel build，以及從
-  installed wheel 驗證三個公開 exports 與其 active runtime dependency metadata
+- 非純文件變更的 `scripts/check-full.sh` 執行完整離線 pytest、sdist/wheel build，
+  以及從 installed wheel 驗證三個公開 exports 與其 active runtime dependency metadata
   是否符合實際安裝版本；不得僅依賴 `--no-deps` 安裝後 import 成功。
