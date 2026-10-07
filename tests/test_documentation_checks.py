@@ -280,6 +280,7 @@ def test_diff_whitespace_failure_blocks_before_lint(
     result = repository.run(sys.executable, str(DOCS), "--index")
     assert result.returncode != 0
     assert "Git operation failed" in result.stderr
+    assert "README.md:1" in result.stderr
     assert "lint must not run" not in result.stderr
 
 
@@ -390,7 +391,8 @@ def test_base_change_during_lint_blocks_acceptance(
     )
     repository.lint_stub(
         "import subprocess\n"
-        f"subprocess.run(('git', 'update-ref', 'refs/heads/baseline', {changed_base!r}), "
+        "subprocess.run(('git', 'update-ref', 'refs/heads/baseline', "
+        f"{changed_base!r}), "
         f"cwd={str(repository.root)!r}, check=True)\n"
     )
     arguments = ["--index"] if target == "index" else ["--candidate", candidate_tree]

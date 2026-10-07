@@ -34,7 +34,7 @@ def git_output(root: Path, *arguments: str) -> bytes:
         )
     except (OSError, subprocess.SubprocessError) as error:
         detail = (
-            error.stderr.decode("utf-8", errors="replace").strip()
+            (error.stderr or error.stdout).decode("utf-8", errors="replace").strip()
             if isinstance(error, subprocess.CalledProcessError)
             else str(error)
         )
