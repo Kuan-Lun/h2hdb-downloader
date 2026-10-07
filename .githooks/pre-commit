@@ -13,4 +13,16 @@ if [[ "$current" == "$primary" ]]; then
     exit 1
 fi
 
-exec scripts/check-fast.sh
+profile="$(.venv/bin/python scripts/check_change_scope.py --index --base HEAD)"
+case "$profile" in
+    documentation)
+        exec .venv/bin/python scripts/check-docs.py --index --base HEAD
+        ;;
+    full)
+        exec scripts/check-fast.sh
+        ;;
+    *)
+        printf 'Unrecognized check profile: %s\n' "$profile" >&2
+        exit 1
+        ;;
+esac
