@@ -138,8 +138,9 @@
   其餘執行 full。合併分類涵蓋 primary parent 到 staged candidate 的完整差異，
   不只看最後一個 commit。文件檢查從 exact staged tree 暫存匯出所有普通
   Markdown 文件與設定，執行 repository-local Markdown lint 及差異 whitespace
-  check，不讀取未 stage 的內容，
-  也不執行 Ruff、mypy、pytest、build 或 online review。
+  check，並從 candidate metadata 驗證 `project.readme` 引用存在的普通檔案；
+  inline text 不需外部文件。檢查不讀取未 stage 的內容，也不執行 Ruff、mypy、
+  pytest、build 或 online review。
 - dependency audit 可連網，但 hooks 只驗證本機 receipt，不在 commit
   過程連網。
 - GitHub Actions 只呼叫相同 scripts，並保留 trusted publishing、平台特有

@@ -131,6 +131,8 @@ def test_newline_in_git_filename_is_not_a_second_path(
         "CLAUDE.md",
         "docs/nested/AGENTS.md",
         "docs/CLAUDE.md",
+        "docs/agents.md",
+        "docs/Claude.md",
     ),
 )
 def test_control_code_and_unknown_paths_require_full_profile(
@@ -400,3 +402,173 @@ def test_base_change_during_lint_blocks_acceptance(
     assert result.returncode != 0
     assert "Base changed" in result.stderr
     assert "Documentation checks passed" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        ("docs/Case.md", "docs/case.md"),
+        ("docs/Case.md", "docs/case.md/nested.md"),
+        ("docs/caf\u00e9.md", "docs/cafe\u0301.md"),
+        ("docs/Case/first.md", "docs/case/second.md"),
+        ("docs/caf\u00e9/first.md", "docs/cafe\u0301/second.md"),
+    ),
+)
+def test_document_export_never_overwrites_colliding_git_paths(
+    documentation_repository: DocumentationRepository, first: str, second: str
+) -> None:
+    repository = documentation_repository
+    for variable in ("TMPDIR", "TEMP", "TMP"):
+        repository.environment[variable] = str(repository.root)
+    repository.git("config", "core.precomposeUnicode", "false")
+    repository.stage("docs/seed.md", "# First\n")
+    first_object = repository.git("rev-parse", ":docs/seed.md")
+    repository.stage("docs/seed.md", "# Second\n")
+    second_object = repository.git("rev-parse", ":docs/seed.md")
+    repository.git(
+        "update-index", "--add", "--cacheinfo", f"100644,{first_object},{first}"
+    )
+    repository.git(
+        "update-index", "--add", "--cacheinfo", f"100644,{second_object},{second}"
+    )
+    tracked_paths = set(repository.git("ls-files", "-z").split("\0"))
+    assert first in tracked_paths and second in tracked_paths
+    probe = repository.root / "filesystem-probe"
+    probe.mkdir()
+    aliases = next(
+        (left, right)
+        for left, right in zip(Path(first).parts, Path(second).parts, strict=False)
+        if left != right
+    )
+    (probe / aliases[0]).write_text("probe", encoding="utf-8")
+    collides = (probe / aliases[1]).exists()
+    marker = repository.root / "lint-started"
+    repository.lint_stub(
+        "from pathlib import Path\n"
+        f"assert Path({first!r}).read_text() == '# First\\n'\n"
+        f"assert Path({second!r}).read_text() == '# Second\\n'\n"
+        f"Path({str(marker)!r}).write_text('checked')\n"
+    )
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    if collides:
+        assert result.returncode != 0
+        assert "Colliding documentation" in result.stderr
+        assert not marker.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert marker.read_text() == "checked"
+
+
+@pytest.mark.parametrize(
+    "readme",
+    (
+        '"README.md"',
+        '{file = "README.md", content-type = "text/markdown"}',
+    ),
+)
+def test_referenced_readme_deletion_blocks_before_lint(
+    documentation_repository: DocumentationRepository, readme: str
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", f"[project]\nreadme = {readme}\n")
+    repository.git("commit", "-m", "test: reference package documentation")
+    repository.git("rm", "README.md")
+    repository.lint_stub("raise AssertionError('lint must not run')\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode != 0
+    assert "Missing project.readme file" in result.stderr
+    assert "lint must not run" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "readme",
+    (
+        '"README.md"',
+        '{file = "README.md", content-type = "text/markdown"}',
+        '{text = "Inline package description", content-type = "text/markdown"}',
+        '"docs/../README.md"',
+    ),
+)
+def test_readme_metadata_allows_unreferenced_document_deletion(
+    documentation_repository: DocumentationRepository, readme: str
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", f"[project]\nreadme = {readme}\n")
+    repository.git("commit", "-m", "test: configure package documentation")
+    repository.git("rm", "docs/guide.md")
+    repository.lint_stub("pass\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode == 0, result.stderr
+
+
+def test_inline_readme_does_not_require_a_readme_file(
+    documentation_repository: DocumentationRepository,
+) -> None:
+    repository = documentation_repository
+    repository.stage(
+        "pyproject.toml",
+        '[project]\nreadme = {text = "", content-type = "text/markdown"}\n',
+    )
+    repository.git("commit", "-m", "test: use inline package description")
+    repository.git("rm", "README.md")
+    repository.lint_stub("pass\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("reference", ("docs", "linked-readme.md"))
+def test_nonregular_readme_reference_blocks_documentation_checks(
+    documentation_repository: DocumentationRepository, reference: str
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", f'[project]\nreadme = "{reference}"\n')
+    if reference == "linked-readme.md":
+        object_id = repository.git("rev-parse", "HEAD:README.md")
+        repository.git(
+            "update-index", "--add", "--cacheinfo", f"120000,{object_id},{reference}"
+        )
+    repository.git("commit", "-m", "test: configure invalid readme reference")
+    repository.stage("README.md", "# Updated\n")
+    repository.lint_stub("raise AssertionError('lint must not run')\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode != 0
+    assert "requires a regular file" in result.stderr
+
+
+def test_readme_reference_uses_candidate_metadata_and_not_worktree(
+    documentation_repository: DocumentationRepository,
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", '[project]\nreadme = "README.md"\n')
+    repository.git("commit", "-m", "test: reference readme")
+    repository.git("rm", "README.md")
+    (repository.root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (repository.root / "README.md").write_text("# Unstaged\n", encoding="utf-8")
+    repository.lint_stub("raise AssertionError('lint must not run')\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode != 0
+    assert "Missing project.readme file" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "readme",
+    (
+        '{file = "README.md", text = "conflict", content-type = "text/markdown"}',
+        '{file = "README.md"}',
+        '{text = 123, content-type = "text/markdown"}',
+        '"../outside.md"',
+        '"/absolute.md"',
+    ),
+)
+def test_invalid_readme_metadata_fails_closed(
+    documentation_repository: DocumentationRepository, readme: str
+) -> None:
+    repository = documentation_repository
+    repository.stage("pyproject.toml", f"[project]\nreadme = {readme}\n")
+    repository.git("commit", "-m", "test: configure invalid readme metadata")
+    repository.stage("README.md", "# Updated\n")
+    repository.lint_stub("raise AssertionError('lint must not run')\n")
+    result = repository.run(sys.executable, str(DOCS), "--index")
+    assert result.returncode != 0
+    assert "project.readme" in result.stderr
+    assert "lint must not run" not in result.stderr
