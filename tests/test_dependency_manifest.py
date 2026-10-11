@@ -23,7 +23,9 @@ def test_manifest_has_stable_canonical_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.syspath_prepend(_ROOT / "scripts")
-    namespace = runpy.run_path(str(_ROOT / "scripts/dependency_manifest.py"))
+    namespace = runpy.run_path(
+        str(_ROOT / "scripts/_shared/h2h_dev_tools/dependency_manifest.py")
+    )
     document = {
         "project": {
             "version": "0.1.0",
@@ -68,7 +70,9 @@ def test_each_dependency_group_changes_manifest(
     document: dict[str, object],
     package: dict[str, object],
 ) -> None:
-    namespace = runpy.run_path(str(_ROOT / "scripts/dependency_manifest.py"))
+    namespace = runpy.run_path(
+        str(_ROOT / "scripts/_shared/h2h_dev_tools/dependency_manifest.py")
+    )
     serialize = namespace["dependency_manifest"]
     assert (
         hashlib.sha256(serialize(document, package)).digest()

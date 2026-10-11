@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import runpy
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,13 +11,17 @@ import pytest
 _INSTALLER = Path(__file__).parents[1] / "scripts" / "install-ci-dependencies.py"
 
 
-def _fixture_installer(tmp_path: Path, manifest: str) -> Path:
+def _fixture_installer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manifest: str
+) -> Path:
     repository = tmp_path / "checkout"
     scripts = repository / "scripts"
     scripts.mkdir(parents=True)
     installer = scripts / _INSTALLER.name
     installer.write_bytes(_INSTALLER.read_bytes())
+    shutil.copytree(_INSTALLER.parent / "_shared", scripts / "_shared")
     (repository / "pyproject.toml").write_text(manifest, encoding="utf-8")
+    monkeypatch.syspath_prepend(scripts)
     return installer
 
 
@@ -38,6 +43,7 @@ def test_ci_install_uses_manifest_constraints_and_required_plugins(
 ) -> None:
     installer = _fixture_installer(
         tmp_path,
+        monkeypatch,
         """
 [project]
 dependencies = ['example-package[extra]>=2; python_version >= "3.14"']
@@ -71,6 +77,7 @@ def test_ci_install_preserves_intersecting_requirements(
 ) -> None:
     installer = _fixture_installer(
         tmp_path,
+        monkeypatch,
         """
 [project]
 dependencies = ["pytest>=9"]
@@ -98,6 +105,7 @@ def test_ci_install_rejects_missing_declarations_before_installing(
 ) -> None:
     installer = _fixture_installer(
         tmp_path,
+        monkeypatch,
         '[project.optional-dependencies]\ndev = ["pytest-xdist>=77"]\n',
     )
     calls = _capture_pip(monkeypatch)
@@ -114,7 +122,7 @@ def test_ci_install_propagates_pip_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     installer = _fixture_installer(
-        tmp_path, '[project.optional-dependencies]\ndev = ["pytest>=99"]\n'
+        tmp_path, monkeypatch, '[project.optional-dependencies]\ndev = ["pytest>=99"]\n'
     )
 
     def fail(command: list[str], *, check: bool) -> subprocess.CompletedProcess[str]:

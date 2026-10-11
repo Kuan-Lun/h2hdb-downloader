@@ -103,6 +103,19 @@
 - 不得依賴 system-wide lint、format、type-check 或 Markdown 工具。
 - `requires-python` 使用 `>=3.14`；只有經驗證的壞版本可使用 `!=`。
 
+## 共用開發工具
+
+- `scripts/_shared/h2h_dev_tools/` 是獨立 `h2h-dev-tools` repository 的 generated
+  source snapshot；其中 Python source 與 `manifest.json` 不得手改。
+- 更新須從明確選定的 toolkit version 或 candidate wheel 執行
+  `h2h-dev-tools sync --repository <path>`，審查完整差異後提交。不得讓一般
+  checkout、hooks 或 CI 依賴固定 sibling 路徑或自動取得最新版。
+- `check-fast.sh` 必須離線驗證 snapshot 的完整檔案集合與雜湊，再執行原有
+  品質檢查。格式修正入口略過 generated snapshot；共用 source 的修改與
+  格式化必須回到 toolkit repository，再重新產生。
+- Repository 的版本、audit、release gate、Git lifecycle 與測試選擇政策仍由
+  本 repository 擁有；shared mechanisms 不取代這些政策。
+
 ## 品質工具
 
 - `pyproject.toml` 是 Ruff 與 mypy 的唯一規則來源。

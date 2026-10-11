@@ -225,6 +225,27 @@ CSV 旁的 `.todownload_gids.csv.claim-*` 隱藏檔代表尚未完成的匯入�
 移除私人資訊後的例外訊息，勿附上帳密或私人帳號頁面。問題可提交到
 [issue tracker](https://github.com/Kuan-Lun/h2hdb-downloader/issues)。
 
+## 共用開發工具
+
+`scripts/_shared/h2h_dev_tools/` 是由獨立 `h2h-dev-tools` 專案產生並提交的
+工具快照，包含版本與逐檔雜湊；不要直接修改。一般開發仍使用
+`scripts/check-fast.sh`、`scripts/check-full.sh` 與 `scripts/git-flow-merge.sh`，
+不需要 sibling checkout、安裝共用工具套件或在每次 commit 時連網。
+
+更新時，在獨立工具環境安裝明確選定的 `h2h-dev-tools` wheel 或版本，再執行：
+
+```bash
+h2h-dev-tools sync --repository /absolute/path/to/this-checkout
+```
+
+檢查產生的差異、執行本 repository 的檢查後，將快照與 manifest 一起提交。
+尚未發布的 candidate wheel 也可供同步；它不代表 PyPI 已有該版本。
+`check-fast.sh` 會離線驗證快照，亦可單獨執行：
+
+```bash
+.venv/bin/python scripts/_shared/h2h_dev_tools/bundle_verify.py --repository .
+```
+
 ## 授權
 
 本專案採用 GPL-3.0-only，詳見 [LICENSE](LICENSE)。

@@ -13,6 +13,7 @@ for executable in .venv/bin/ruff .venv/bin/mypy node_modules/.bin/markdownlint-c
     }
 done
 
+.venv/bin/python scripts/_shared/h2h_dev_tools/bundle_verify.py --repository .
 .venv/bin/ruff check --no-cache .
 .venv/bin/ruff format --no-cache --check .
 .venv/bin/mypy --config-file pyproject.toml --no-incremental --cache-dir=/dev/null

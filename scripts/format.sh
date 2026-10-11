@@ -14,6 +14,6 @@ cd "$repository_root"
     exit 1
 }
 
-.venv/bin/ruff check --fix .
-.venv/bin/ruff format .
+.venv/bin/ruff check --extend-exclude scripts/_shared --fix .
+.venv/bin/ruff format --extend-exclude scripts/_shared .
 node_modules/.bin/markdownlint-cli2 --fix
