@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 
-from dependency_manifest import dependency_manifest
+from _shared.h2h_dev_tools.dependency_manifest import dependency_manifest
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
