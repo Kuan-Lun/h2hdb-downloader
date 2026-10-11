@@ -68,7 +68,3 @@ fi
 uv pip install --refresh --python .venv/bin/python "${install_arguments[@]}"
 
 npm install --package-lock=false --ignore-scripts --no-audit --no-fund
-
-if [[ -f verification/tools.lock.toml ]]; then
-    .venv/bin/python scripts/fetch-formal-tools.py
-fi

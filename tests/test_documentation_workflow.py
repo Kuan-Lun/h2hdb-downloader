@@ -68,6 +68,7 @@ def _repository(tmp_path: Path, *, install_hooks: bool = True) -> Path:
         "scripts/check_change_scope.py",
         "scripts/check-docs.py",
         "scripts/check-version.py",
+        "scripts/dependency_manifest.py",
         ".githooks/pre-commit",
         ".githooks/pre-merge-commit",
         ".githooks/commit-msg",

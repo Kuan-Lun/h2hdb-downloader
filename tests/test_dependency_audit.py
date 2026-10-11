@@ -13,7 +13,8 @@ from pytest import MonkeyPatch
 AuditNode = Callable[[str, str], dict[str, object]]
 
 
-def _audit_node() -> AuditNode:
+def _audit_node(monkeypatch: MonkeyPatch) -> AuditNode:
+    monkeypatch.syspath_prepend(Path(__file__).parents[1] / "scripts")
     namespace = runpy.run_path(
         str(Path(__file__).parents[1] / "scripts" / "audit-dependencies.py")
     )
@@ -47,7 +48,7 @@ def test_node_audit_proves_latest_satisfies_declared_range(
 ) -> None:
     calls = _install_npm_fake(monkeypatch, ["0.23.2", ["0.23.1", "0.23.2"]])
 
-    result = _audit_node()("markdownlint-cli2", ">=0.23.1")
+    result = _audit_node(monkeypatch)("markdownlint-cli2", ">=0.23.1")
 
     assert result["latest"] == "0.23.2"
     assert result["latest_satisfies"] is True
@@ -68,7 +69,7 @@ def test_node_audit_reports_latest_outside_declared_range(
 ) -> None:
     _install_npm_fake(monkeypatch, ["0.23.2", "0.23.1"])
 
-    result = _audit_node()("markdownlint-cli2", "0.23.1")
+    result = _audit_node(monkeypatch)("markdownlint-cli2", "0.23.1")
 
     assert result["latest_satisfies"] is False
 
@@ -79,4 +80,4 @@ def test_node_audit_rejects_invalid_registry_payload(
     _install_npm_fake(monkeypatch, [123])
 
     with pytest.raises(ValueError, match="invalid latest version"):
-        _audit_node()("markdownlint-cli2", ">=0.23.1")
+        _audit_node(monkeypatch)("markdownlint-cli2", ">=0.23.1")
